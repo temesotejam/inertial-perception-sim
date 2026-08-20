@@ -1,5 +1,6 @@
 from __future__ import annotations
 import numpy as np
+from scipy.spatial.transform import Rotation
 from .types import ImuSample, CameraFrame, CameraFeature, RangeFrame, RayMeasurement, GroundTruthState
 from .world import LANDMARKS, ray_scene_distance
 
@@ -28,12 +29,19 @@ class CameraSimulator:
         b=np.array([1.,-(u-self.cx)/self.fx,-(v-self.cy)/self.fy]); return b/np.linalg.norm(b)
 
 class GridRangeSimulator:
-    """Generic grid range sensor. Default optical axis points body -Z into the shared 3D scene."""
-    def __init__(self,rng,rows=8,cols=8,fov_x_deg=45,fov_y_deg=45,noise_std=.008,max_range=4.,dropout=.02):
-        self.rng=rng; self.rows=rows; self.cols=cols; self.noise_std=noise_std; self.max_range=max_range; self.dropout=dropout; self.dirs=[]
+    """Generic grid range sensor sharing the body origin with the camera.
+
+    The optical axis is pitched downward from body +X so one sensor can both
+    observe the floor for inertial correction and overlap the lower camera FOV
+    for RGB-D projection. This remains product-agnostic; only the ray geometry
+    is part of the generic sensor model.
+    """
+    def __init__(self,rng,rows=8,cols=8,fov_x_deg=45,fov_y_deg=45,tilt_down_deg=35.,noise_std=.008,max_range=4.,dropout=.02):
+        self.rng=rng; self.rows=rows; self.cols=cols; self.noise_std=noise_std; self.max_range=max_range; self.dropout=dropout; self.tilt_down_deg=tilt_down_deg; self.dirs=[]
+        mount=Rotation.from_euler('y',np.radians(tilt_down_deg))
         for py in np.linspace(-np.radians(fov_y_deg)/2,np.radians(fov_y_deg)/2,rows):
             for px in np.linspace(-np.radians(fov_x_deg)/2,np.radians(fov_x_deg)/2,cols):
-                d=np.array([np.tan(py),np.tan(px),-1.]); d/=np.linalg.norm(d); self.dirs.append(d)
+                d=np.array([1.,np.tan(px),np.tan(py)]); d/=np.linalg.norm(d); d=mount.apply(d); d/=np.linalg.norm(d); self.dirs.append(d)
     def sample(self,gt):
         rays=[]; origin=gt.position
         for db in self.dirs:
