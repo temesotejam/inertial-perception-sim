@@ -33,17 +33,18 @@ def run_simulation(scenario='combined',duration=10.,seed=42,camera_enabled=True,
     est=AttitudeEstimator(initial_orientation=truth_at(0,scenario).orientation);dt=1/imu_hz;next_cam=next_range=0.;records=[]
     last_cam=last_range=last_cam_gt=last_range_gt=None;prev_cam=None;prev_cam_reference=None;last_visual=None
     for k in range(int(round(duration*imu_hz))+1):
-        t=k*dt;gt=truth_at(t,scenario);est.propagate(imu.sample(gt));event={"kind":"imu","residual_deg":0.,"correction_deg":0.}
+        t=k*dt;gt=truth_at(t,scenario);est.propagate(imu.sample(gt));event={"kind":"imu","residual_deg":0.,"correction_deg":0.};camera_sampled=False
         if camera_enabled and t+1e-9>=next_cam:
             last_cam_gt=gt;last_cam=cam.sample(gt);vis=visual_relative_rotation(prev_cam,last_cam,cam)
             if vis is not None and prev_cam_reference is not None:
-                est.update_camera_relative(vis["rotation"],prev_cam_reference,vis["tracks"],vis["track_rms_deg"]);event=est.last_event.copy();last_visual=event.copy()
-            prev_cam=last_cam;prev_cam_reference=est.orientation
-            next_cam+=1/camera_hz
+                est.update_camera_relative(vis["rotation"],prev_cam_reference,vis["tracks"],vis["track_rms_deg"]);event=est.last_event.copy();event["candidate_tracks"]=vis.get("candidate_tracks",vis["tracks"]);last_visual=event.copy()
+            prev_cam=last_cam;camera_sampled=True;next_cam+=1/camera_hz
         if range_enabled and t+1e-9>=next_range:
             last_range_gt=gt;last_range=rngs.sample(gt);normal=range_floor_normal(last_range)
             if normal is not None:est.update_range_floor(normal);event=est.last_event.copy()
             next_range+=1/range_hz
+        # Reference the next visual interval to the fully fused state at this camera timestamp.
+        if camera_sampled:prev_cam_reference=est.orientation
         s=est.state(t);rec={"t":round(t,6),"true_euler":_euler_deg(gt.orientation),"est_euler":_euler_deg(s.orientation),"error_deg":rotation_error_deg(s.orientation,gt.orientation),"event":event}
         if last_visual is not None:rec["visual_frontend"]=last_visual.copy()
         if k%max(1,int(imu_hz/20))==0:
@@ -57,7 +58,7 @@ def run_simulation(scenario='combined',duration=10.,seed=42,camera_enabled=True,
                     rec["range_camera_overlay"]=_range_to_camera_overlay(last_range,cam,last_range_gt,last_cam_gt);rec["range_camera_dt_ms"]=float((last_range.timestamp-last_cam.timestamp)*1000.)
         records.append(rec)
     errors=np.array([r['error_deg'] for r in records]);metrics={"scenario":scenario,"duration_s":duration,"seed":seed,"camera_enabled":camera_enabled,"range_enabled":range_enabled,"orientation_rmse_deg":float(np.sqrt(np.mean(errors**2))),"orientation_mae_deg":float(np.mean(np.abs(errors))),"orientation_max_deg":float(np.max(errors))}
-    return {"meta":{"imu_hz":imu_hz,"camera_hz":camera_hz,"range_hz":range_hz,"camera":{"width":cam.width,"height":cam.height,"fov_deg":cam.fov_deg,"render_width":cam.render_width,"render_height":cam.render_height,"feature_detector":"Harris","constraint":"relative_rotation_from_image_tracks"},"range":{"rows":rngs.rows,"cols":rngs.cols,"tilt_down_deg":rngs.tilt_down_deg},"scene":SCENE},"metrics":metrics,"records":records}
+    return {"meta":{"imu_hz":imu_hz,"camera_hz":camera_hz,"range_hz":range_hz,"camera":{"width":cam.width,"height":cam.height,"fov_deg":cam.fov_deg,"render_width":cam.render_width,"render_height":cam.render_height,"feature_detector":"Harris","tracker":"2D patch + rotation RANSAC","constraint":"relative_rotation_from_image_tracks"},"range":{"rows":rngs.rows,"cols":rngs.cols,"tilt_down_deg":rngs.tilt_down_deg},"scene":SCENE},"metrics":metrics,"records":records}
 
 
 def compare_modes(scenario='combined',duration=10.,seed=42):
