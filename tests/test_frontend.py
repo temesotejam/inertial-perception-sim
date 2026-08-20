@@ -9,9 +9,12 @@ def test_visual_relative_rotation_recovers_motion_without_world_map():
     rng=np.random.default_rng(1);cam=CameraSimulator(rng,pixel_noise_std=0,dropout=0)
     gt0=truth_at(1.15,'combined');gt1=truth_at(1.20,'combined');f0=cam.sample(gt0);f1=cam.sample(gt1)
     vis=visual_relative_rotation(f0,f1,cam)
-    assert vis is not None and vis['tracks']>=5
+    # Four geometrically consistent bearings are sufficient to constrain a 3-D rotation.
+    # RANSAC may deliberately discard otherwise plausible image matches.
+    assert vis is not None and vis['tracks']>=4
     expected=gt0.orientation.inv()*gt1.orientation
     assert rotation_error_deg(vis['rotation'],expected)<1.0
+    assert vis['track_rms_deg']<1.0
 
 
 def test_feature_ids_do_not_require_world_positions():
