@@ -10,8 +10,8 @@ LANDMARKS=np.array([[4,-1.8,.4],[4,-1,1.4],[4,-.2,.8],[4,.5,1.8],[4,1.2,.5],[4,1
 # the Python simulator and browser viewer can render the same world.
 SCENE={
     "terrain":{"x_min":-2.0,"x_max":6.0,"y_min":-3.0,"y_max":3.0,"step":0.35,
-               "amplitude":0.055,"wave_x":0.72,"wave_y":1.08,"bump":0.075,
-               "bump_x":1.7,"bump_y":-0.55,"bump_sigma":0.75,
+               "amplitude":0.075,"wave_x":0.72,"wave_y":1.08,"bump":0.105,
+               "bump_x":1.9,"bump_y":-0.7,"bump_sigma":0.72,"flat_radius":1.35,"blend_radius":2.0,
                "base_color":"#9aa77b"},
     "light":{"direction":[-0.55,-0.35,-1.0],"ambient":0.38,"diffuse":0.72},
     "objects":[
@@ -22,12 +22,19 @@ SCENE={
     ],
 }
 
+def _terrain_blend(x: float,y: float) -> float:
+    t=SCENE["terrain"]; r=float(np.hypot(x,y)); a=t["flat_radius"]; b=t["blend_radius"]
+    if r<=a:return 0.0
+    if r>=b:return 1.0
+    u=(r-a)/(b-a)
+    return float(u*u*(3-2*u))
+
 def terrain_height(x: float, y: float) -> float:
     t=SCENE["terrain"]
     wave=t["amplitude"]*(0.58*np.sin(t["wave_x"]*x)*np.cos(t["wave_y"]*y)+0.27*np.sin(1.65*y+0.35*x))
     r2=(x-t["bump_x"])**2+(y-t["bump_y"])**2
     bump=t["bump"]*np.exp(-r2/(2*t["bump_sigma"]**2))
-    return float(wave+bump)
+    return float(_terrain_blend(x,y)*(wave+bump))
 
 def terrain_normal(x: float, y: float, eps: float=1e-3) -> np.ndarray:
     dzdx=(terrain_height(x+eps,y)-terrain_height(x-eps,y))/(2*eps)
@@ -36,7 +43,7 @@ def terrain_normal(x: float, y: float, eps: float=1e-3) -> np.ndarray:
 
 def _ray_box(origin,direction,obj,max_range):
     c=np.asarray(obj["center"],float); s=np.asarray(obj["size"],float); lo=c-s/2; hi=c+s/2
-    inv=np.where(np.abs(direction)>1e-10,1.0/direction,np.inf)
+    inv=np.empty(3,float); mask=np.abs(direction)>1e-10; inv[mask]=1.0/direction[mask]; inv[~mask]=np.inf
     t0=(lo-origin)*inv; t1=(hi-origin)*inv
     tmin=float(np.max(np.minimum(t0,t1))); tmax=float(np.min(np.maximum(t0,t1)))
     if tmax<max(tmin,0.0) or tmin>max_range:return None
