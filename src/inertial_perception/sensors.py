@@ -1,7 +1,7 @@
 from __future__ import annotations
 import numpy as np
 from .types import ImuSample, CameraFrame, CameraFeature, RangeFrame, RayMeasurement, GroundTruthState
-from .world import LANDMARKS
+from .world import LANDMARKS, ray_scene_distance
 
 class ImuSimulator:
     def __init__(self,rng,gyro_bias=(.002,-.0015,.006),gyro_noise_std=.0015,accel_noise_std=.025):
@@ -28,7 +28,7 @@ class CameraSimulator:
         b=np.array([1.,-(u-self.cx)/self.fx,-(v-self.cy)/self.fy]); return b/np.linalg.norm(b)
 
 class GridRangeSimulator:
-    """Generic grid range sensor. Default optical axis points body -Z toward a floor."""
+    """Generic grid range sensor. Default optical axis points body -Z into the shared 3D scene."""
     def __init__(self,rng,rows=8,cols=8,fov_x_deg=45,fov_y_deg=45,noise_std=.008,max_range=4.,dropout=.02):
         self.rng=rng; self.rows=rows; self.cols=cols; self.noise_std=noise_std; self.max_range=max_range; self.dropout=dropout; self.dirs=[]
         for py in np.linspace(-np.radians(fov_y_deg)/2,np.radians(fov_y_deg)/2,rows):
@@ -37,9 +37,12 @@ class GridRangeSimulator:
     def sample(self,gt):
         rays=[]; origin=gt.position
         for db in self.dirs:
+            if self.rng.random()<self.dropout:
+                rays.append(RayMeasurement(db.copy(),float('nan'),0.)); continue
             dw=gt.orientation.apply(db)
-            if dw[2]>=-1e-8 or self.rng.random()<self.dropout: rays.append(RayMeasurement(db.copy(),float('nan'),0.)); continue
-            dist=-origin[2]/dw[2]
-            if dist<=0 or dist>self.max_range: rays.append(RayMeasurement(db.copy(),float('nan'),0.)); continue
-            rays.append(RayMeasurement(db.copy(),float(max(0,dist+self.rng.normal(0,self.noise_std))),1.))
+            dist,_=ray_scene_distance(origin,dw,self.max_range)
+            if dist is None:
+                rays.append(RayMeasurement(db.copy(),float('nan'),0.)); continue
+            measured=max(0,float(dist)+self.rng.normal(0,self.noise_std))
+            rays.append(RayMeasurement(db.copy(),measured,1.))
         return RangeFrame(gt.timestamp,rays,self.rows,self.cols)
