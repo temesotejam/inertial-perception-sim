@@ -28,8 +28,7 @@ def test_combined_eskf_remains_bounded_without_world_map():
     assert allm<3.0 and allm<imu*1.5
 
 
-def test_blend_estimator_remains_available_for_regression_comparison():
+def test_legacy_estimators_remain_available_for_regression_comparison():
     out=compare_estimators('combined',duration=2.,seed=11)
-    assert set(out)=={'blend','eskf'}
-    for kind in out:
-        assert np.isfinite(out[kind]['all']['metrics']['orientation_rmse_deg'])
+    assert set(out)=={'blend','attitude_eskf','ins_eskf'}
+    for kind in out:assert np.isfinite(out[kind]['all']['metrics']['orientation_rmse_deg'])
