@@ -7,9 +7,10 @@ const SENSOR_POS=[0,0,1];
 function fit(c){let r=c.getBoundingClientRect(),d=devicePixelRatio||1;c.width=r.width*d;c.height=r.height*d;c.getContext('2d').setTransform(d,0,0,d,0,0)}
 function project(p,w,h){let[x,y,z]=p;return[w*.38+(x-y)*47,h*.83-(z*.92+(x+y)*.19)*53]}
 function rot(e,v){let[rx,ry,rz]=e.map(x=>x*Math.PI/180),[x,y,z]=v,cx=Math.cos(rx),sx=Math.sin(rx),cy=Math.cos(ry),sy=Math.sin(ry),cz=Math.cos(rz),sz=Math.sin(rz),X=x,Y=y*cx-z*sx,Z=y*sx+z*cx,X2=X*cy+Z*sy,Y2=Y,Z2=-X*sy+Z*cy;return[X2*cz-Y2*sz,X2*sz+Y2*cz,Z2]}
-function sub(a,b){return a.map((x,k)=>x-b[k])}function add(a,b){return a.map((x,k)=>x+b[k])}function mul(a,s){return a.map(x=>x*s)}function dot(a,b){return a.reduce((s,x,k)=>s+x*b[k],0)}
+function sub(a,b){return a.map((x,k)=>x-b[k])}function add(a,b){return a.map((x,k)=>x+b[k])}function dot(a,b){return a.reduce((s,x,k)=>s+x*b[k],0)}
 function bodyCoords(e,p){let v=sub(p,SENSOR_POS),ex=rot(e,[1,0,0]),ey=rot(e,[0,1,0]),ez=rot(e,[0,0,1]);return[dot(v,ex),dot(v,ey),dot(v,ez)]}
-function terrainHeight(x,y){let t=data?.[mode]?.meta?.scene?.terrain;if(!t)return 0;let wave=t.amplitude*(.58*Math.sin(t.wave_x*x)*Math.cos(t.wave_y*y)+.27*Math.sin(1.65*y+.35*x)),r2=(x-t.bump_x)**2+(y-t.bump_y)**2,b=t.bump*Math.exp(-r2/(2*t.bump_sigma**2));return wave+b}
+function terrainBlend(x,y,t){let r=Math.hypot(x,y),a=t.flat_radius||0,b=t.blend_radius||a;if(r<=a)return 0;if(r>=b||b<=a)return 1;let u=(r-a)/(b-a);return u*u*(3-2*u)}
+function terrainHeight(x,y){let t=data?.[mode]?.meta?.scene?.terrain;if(!t)return 0;let wave=t.amplitude*(.58*Math.sin(t.wave_x*x)*Math.cos(t.wave_y*y)+.27*Math.sin(1.65*y+.35*x)),r2=(x-t.bump_x)**2+(y-t.bump_y)**2,b=t.bump*Math.exp(-r2/(2*t.bump_sigma**2));return terrainBlend(x,y,t)*(wave+b)}
 function normalAt(x,y){let e=.025,a=terrainHeight(x+e,y)-terrainHeight(x-e,y),b=terrainHeight(x,y+e)-terrainHeight(x,y-e),n=[-a/(2*e),-b/(2*e),1],m=Math.hypot(...n);return n.map(v=>v/m)}
 function hexRgb(h){h=h.replace('#','');return[parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]}
 function rgbHex(rgb){return'#'+rgb.map(v=>Math.max(0,Math.min(255,Math.round(v))).toString(16).padStart(2,'0')).join('')}
