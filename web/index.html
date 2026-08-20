@@ -8,21 +8,21 @@
 </style>
 </head>
 <body>
-<header><h1>Inertial Perception Simulator — Stable Sensor View</h1><p>Camera・Range・Dense Depth・誤差表示を最後の有効フレームで保持し、欠測状態を明示して見やすく表示します。</p></header>
+<header><h1>Inertial Perception Simulator — Relative Visual Frontend</h1><p>画像上のHarris特徴を時間追跡し、世界座標を知らずにフレーム間のCamera相対回転を作ってIMUを補正します。</p></header>
 <div class="wrap">
-<p class="scene-note">各センサパネルはデータ欠測時に消えず、直前の有効値を保持します。右上のバッジで LIVE / STALE / DROPOUT / DISABLED を区別できるため、値が更新中なのか保持中なのかを確認できます。</p>
+<p class="scene-note">Visual constraintは feature_id と pixel bearing のみから計算します。Rendererの3D hitは評価用に残りますがEstimatorには渡しません。Camera画面の黄色線が実際に使う時間追跡で、Visual ΔRとIMU ΔRの差が補正Residualになります。</p>
 <div class="controls"><strong>Fusion:</strong><button data-mode="imu_only">IMU only</button><button data-mode="imu_camera">IMU + Camera</button><button data-mode="imu_range">IMU + Range</button><button data-mode="all" class="active">All sensors</button><span class="spacer"></span><label class="toggle"><input id="denseOverlayToggle" type="checkbox"> Dense overlay on camera</label><button id="prev">◀ 1 step</button><button id="play">▶ Play</button><button id="next">1 step ▶</button><label>Speed <select id="speed"><option>.25</option><option>.5</option><option selected>1</option><option>2</option><option>5</option></select>×</label><span id="status" class="status"></span></div>
 <section class="card" style="margin-bottom:14px"><h2>Fault Injection / Sensitivity Controls</h2><div class="faults"><div class="fault"><label>Gyro bias <span id="vBias">0.00 °/s</span></label><input id="gyroBias" type="range" min="-1" max="1" step="0.01" value="0"></div><div class="fault"><label>Gyro noise <span id="vNoise">0.00 °</span></label><input id="gyroNoise" type="range" min="0" max="2" step="0.02" value="0"></div><div class="fault"><label>Camera dropout <span id="vCamDrop">0%</span></label><input id="camDrop" type="range" min="0" max="100" step="1" value="0"></div><div class="fault"><label>Range dropout <span id="vRangeDrop">0%</span></label><input id="rangeDrop" type="range" min="0" max="100" step="1" value="0"></div><div class="fault"><label>Camera timestamp delay <span id="vCamDelay">0 ms</span></label><input id="camDelay" type="range" min="0" max="300" step="5" value="0"></div><div class="fault"><label>Range timestamp delay <span id="vRangeDelay">0 ms</span></label><input id="rangeDelay" type="range" min="0" max="300" step="5" value="0"></div></div><p class="explain"><span class="warn">注:</span> 故障注入は可視化実験レイヤです。Estimator性能の正式評価はPython/GitHub Actionsを基準にします。</p></section>
 <div class="grid">
 <section class="card"><h2>3D World — terrain / colored geometry / range points</h2><canvas id="world" class="canvas"></canvas></section>
-<section class="card"><h2>Current State</h2><div id="state" class="state"></div><div id="event" class="event"></div><p class="explain">Residual は外界観測とIMU予測の不一致、Correction はその更新で適用した角度です。</p></section>
-<section class="card"><h2>Synthetic Camera + Sparse RGB-D</h2><canvas id="camera" class="canvas smallcanvas"></canvas></section>
+<section class="card"><h2>Current State + Relative Visual Constraint</h2><div id="state" class="state"></div><div id="event" class="event"></div><p class="explain">Visual ΔR は画像追跡から求めた相対回転、IMU ΔR は同じCamera間隔でIMUが積分した回転です。その差がCamera補正Residualです。</p></section>
+<section class="card"><h2>Synthetic Camera + Tracked Harris Features + Sparse RGB-D</h2><canvas id="camera" class="canvas smallcanvas"></canvas></section>
 <section class="card"><h2>Dense Depth — edge-aware interpolation</h2><canvas id="denseDepth" class="canvas smallcanvas"></canvas></section>
 <section class="card"><h2>Dense Depth Error vs Ground Truth</h2><canvas id="depthError" class="canvas smallcanvas"></canvas><p id="depthMetrics" class="eval-note">Depth evaluation loading…</p></section>
 <section class="card"><h2>Raw Grid Range — 8 × 8</h2><div id="depth" class="depth"></div></section>
 <section class="card"><h2>Event Trace — predict / observe / correct</h2><div id="trace" class="trace"></div></section>
-<section class="card"><h2>How to read the panels</h2><p class="explain"><b>LIVE</b> は新しいデータ、<b>STALE</b> は直前値を保持中、<b>DROPOUT · HOLD</b> は意図的/実験的欠測中、<b>DISABLED</b> は現在のFusion modeではそのセンサを使っていない状態です。</p><button id="resetFaults">Reset faults</button></section>
+<section class="card"><h2>How to read the visual frontend</h2><p class="explain">黄色線は前フレームから現在フレームへ継続した特徴です。Tracksが少なすぎる場合はCamera更新を行いません。track RMSが大きい場合は対応の質が悪いことを示します。</p><button id="resetFaults">Reset faults</button></section>
 <section class="card" style="grid-column:1/-1"><h2>Orientation Error Timeline</h2><canvas id="chart" class="canvas smallcanvas"></canvas><div id="metrics" class="legend"></div></section>
 </div></div>
-<script src="experiments.js"></script><script src="app.js"></script><script src="dense_depth.js"></script><script src="depth_eval.js"></script><script src="stabilization.js"></script>
+<script src="experiments.js"></script><script src="app.js"></script><script src="dense_depth.js"></script><script src="depth_eval.js"></script><script src="stabilization.js"></script><script src="visual_frontend.js"></script>
 </body></html>
