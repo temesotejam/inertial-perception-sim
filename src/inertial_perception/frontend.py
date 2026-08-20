@@ -60,7 +60,6 @@ def _minimal_rotation(source,target):
 
 
 def _range_icp_diagnostics(prev,cur,min_pairs=8,max_pair_distance=.28):
-    """Return conservative ICP health metrics; its full 3-D rotation is not fused."""
     if len(prev)<min_pairs or len(cur)<min_pairs:return None
     dist=np.linalg.norm(cur[:,None,:]-prev[None,:,:],axis=2);j=np.argmin(dist,axis=1);d=dist[np.arange(len(cur)),j]
     i_back=np.argmin(dist,axis=0);mutual=np.array([i_back[jj]==ii for ii,jj in enumerate(j)],bool)
@@ -78,23 +77,15 @@ def _range_icp_diagnostics(prev,cur,min_pairs=8,max_pair_distance=.28):
 
 
 def range_relative_rotation(previous_frame,current_frame,min_pairs=8):
-    """Estimate only the Range-observable relative tilt between frames.
-
-    Consecutive local surface normals provide the relative Roll/Pitch change
-    without assuming that the surface is horizontal in the world. Rotation
-    about the local normal is deliberately left unobserved instead of letting a
-    near-planar ICP invent Yaw. ICP is retained only as a geometric health
-    diagnostic used to modulate fusion gain.
-    """
+    """Estimate only the Range-observable relative tilt between frames."""
     if previous_frame is None or current_frame is None:return None
     p0=_local_range_plane(previous_frame);p1=_local_range_plane(current_frame)
     if p0 is None or p1 is None:return None
-    # For a static world surface: R_prev^-1 R_cur * n_cur = n_prev.
     rot=_minimal_rotation(p1["normal"],p0["normal"])
     prev=_range_points(previous_frame);cur=_range_points(current_frame);diag=_range_icp_diagnostics(prev,cur,min_pairs=min_pairs)
     if diag is None:return None
     plane_rms=max(p0["plane_rms_m"],p1["plane_rms_m"])
-    return {"rotation":rot,"pairs":diag["pairs"],"range_rms_m":max(diag["range_rms_m"],plane_rms),"translation_m":diag["translation_m"],"prev_points":int(len(prev)),"current_points":int(len(cur)),"observable":"tilt_only","plane_rms_m":float(plane_rms)}
+    return {"rotation":rot,"previous_normal":p0["normal"].copy(),"current_normal":p1["normal"].copy(),"pairs":diag["pairs"],"range_rms_m":max(diag["range_rms_m"],plane_rms),"translation_m":diag["translation_m"],"prev_points":int(len(prev)),"current_points":int(len(cur)),"observable":"tilt_only","plane_rms_m":float(plane_rms)}
 
 
 def range_floor_normal(frame,local_fraction=.45):
