@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import numpy as np
-from .world import truth_at
+from .world import truth_at,SCENE
 from .sensors import ImuSimulator,CameraSimulator,GridRangeSimulator
 from .frontend import visual_orientation,range_floor_normal
 from .estimator import AttitudeEstimator
@@ -32,7 +32,7 @@ def run_simulation(scenario='combined',duration=10.,seed=42,camera_enabled=True,
                 rec["range_world_points"]=pts
         records.append(rec)
     errors=np.array([r['error_deg'] for r in records]); metrics={"scenario":scenario,"duration_s":duration,"seed":seed,"camera_enabled":camera_enabled,"range_enabled":range_enabled,"orientation_rmse_deg":float(np.sqrt(np.mean(errors**2))),"orientation_mae_deg":float(np.mean(np.abs(errors))),"orientation_max_deg":float(np.max(errors))}
-    return {"meta":{"imu_hz":imu_hz,"camera_hz":camera_hz,"range_hz":range_hz,"camera":{"width":cam.width,"height":cam.height},"range":{"rows":rngs.rows,"cols":rngs.cols}},"metrics":metrics,"records":records}
+    return {"meta":{"imu_hz":imu_hz,"camera_hz":camera_hz,"range_hz":range_hz,"camera":{"width":cam.width,"height":cam.height,"fov_deg":70.0},"range":{"rows":rngs.rows,"cols":rngs.cols},"scene":SCENE},"metrics":metrics,"records":records}
 
 def compare_modes(scenario='combined',duration=10.,seed=42):
     modes={"imu_only":(False,False),"imu_camera":(True,False),"imu_range":(False,True),"all":(True,True)}
