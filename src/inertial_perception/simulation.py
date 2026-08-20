@@ -13,12 +13,21 @@ from .math3d import rotation_error_deg
 def _euler_deg(r): return r.as_euler('xyz',degrees=True).tolist()
 
 
-def _range_to_camera_overlay(frame,cam,range_gt,camera_gt):
+def _range_to_camera_overlay(frame,cam,range_gt=None,camera_gt=None):
+    """Project range hits into a camera frame.
+
+    With measurement poses, the projection is time-registered in world space.
+    Without them, retain the original co-located/same-time body-frame behavior
+    for simple unit tests and generic callers.
+    """
     out=[]
     for idx,r in enumerate(frame.rays):
         if not np.isfinite(r.distance) or r.confidence<=0:continue
-        pw=range_gt.position+range_gt.orientation.apply(np.asarray(r.direction,float)*float(r.distance))
-        x,y,z=camera_gt.orientation.inv().apply(pw-camera_gt.position)
+        if range_gt is None or camera_gt is None:
+            x,y,z=np.asarray(r.direction,float)*float(r.distance)
+        else:
+            pw=range_gt.position+range_gt.orientation.apply(np.asarray(r.direction,float)*float(r.distance))
+            x,y,z=camera_gt.orientation.inv().apply(pw-camera_gt.position)
         if x<=.1:continue
         u=cam.cx-cam.fx*y/x;v=cam.cy-cam.fy*z/x
         if 0<=u<cam.width and 0<=v<cam.height:out.append([float(u),float(v),float(r.distance),idx])
