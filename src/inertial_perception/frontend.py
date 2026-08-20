@@ -3,23 +3,29 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 
-def visual_orientation(frame,camera,position=np.array([0.,0.,1.])):
-    """Estimate absolute camera orientation from image-detected mapped features.
+def visual_relative_rotation(previous_frame,current_frame,camera,min_tracks=5):
+    """Estimate relative camera rotation from matched image bearings only.
 
-    Feature locations now come from Harris corners on the rendered image. The
-    simulation renderer attaches the corresponding static world hit to each
-    corner, standing in for the landmark map that a real VIO/SLAM system would
-    build over time.
+    No world position, depth, or renderer ground truth is used. Matching is by
+    persistent feature_id assigned by the image-space tracker. The returned
+    rotation is R_prev^-1 * R_cur for the body-to-world convention used here.
     """
-    usable=[f for f in frame.features if f.world_position is not None]
-    if len(usable)<3:return None
-    world=[]; body=[]
-    for f in usable:
-        w=np.asarray(f.world_position,float)-position
-        if np.linalg.norm(w)<1e-8:continue
-        world.append(w/np.linalg.norm(w)); body.append(camera.bearing_from_pixel(f.u,f.v))
-    if len(world)<3:return None
-    rot,_=Rotation.align_vectors(np.asarray(world),np.asarray(body)); return rot
+    if previous_frame is None or current_frame is None:return None
+    prev={f.feature_id:f for f in previous_frame.features};pairs=[]
+    for f in current_frame.features:
+        p=prev.get(f.feature_id)
+        if p is None:continue
+        pairs.append((camera.bearing_from_pixel(p.u,p.v),camera.bearing_from_pixel(f.u,f.v)))
+    if len(pairs)<min_tracks:return None
+    prev_b=np.asarray([a for a,_ in pairs]);cur_b=np.asarray([b for _,b in pairs])
+    rot,_=Rotation.align_vectors(prev_b,cur_b)
+    # One robust trimming pass rejects mismatched 2-D nearest-neighbour tracks.
+    pred=rot.apply(cur_b);dots=np.clip(np.sum(pred*prev_b,axis=1),-1,1);err=np.arccos(dots)
+    if len(pairs)>=8:
+        keep=np.argsort(err)[:max(min_tracks,int(np.ceil(len(pairs)*.75)))]
+        rot,_=Rotation.align_vectors(prev_b[keep],cur_b[keep]);err=err[keep]
+    rms=float(np.degrees(np.sqrt(np.mean(err**2)))) if len(err) else float('nan')
+    return {"rotation":rot,"tracks":int(len(err)),"track_rms_deg":rms}
 
 
 def _fit_plane_normal(points):
