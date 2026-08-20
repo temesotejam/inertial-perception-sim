@@ -10,6 +10,24 @@ from .math3d import rotation_error_deg
 
 def _euler_deg(r): return r.as_euler('xyz',degrees=True).tolist()
 
+def _range_to_camera_overlay(frame,cam):
+    """Project measured body-frame range rays into the co-located camera.
+
+    Returns [u, v, distance, ray_index] only for valid points inside the camera
+    image. Because the current minimal rig uses a shared optical origin, a hit
+    seen by both sensors has the same line of sight and needs no extra occlusion
+    approximation. Future non-zero extrinsics can extend this with a z-buffer.
+    """
+    out=[]
+    for idx,r in enumerate(frame.rays):
+        if not np.isfinite(r.distance) or r.confidence<=0: continue
+        x,y,z=np.asarray(r.direction,float)*float(r.distance)
+        if x<=.1: continue
+        u=cam.cx-cam.fx*y/x; v=cam.cy-cam.fy*z/x
+        if 0<=u<cam.width and 0<=v<cam.height:
+            out.append([float(u),float(v),float(r.distance),idx])
+    return out
+
 def run_simulation(scenario='combined',duration=10.,seed=42,camera_enabled=True,range_enabled=True,imu_hz=200,camera_hz=30,range_hz=15):
     rng=np.random.default_rng(seed); imu=ImuSimulator(rng); cam=CameraSimulator(rng); rngs=GridRangeSimulator(rng); est=AttitudeEstimator(initial_orientation=truth_at(0,scenario).orientation); dt=1/imu_hz; next_cam=next_range=0.; records=[]; last_cam=last_range=None
     for k in range(int(round(duration*imu_hz))+1):
@@ -30,9 +48,10 @@ def run_simulation(scenario='combined',duration=10.,seed=42,camera_enabled=True,
                 for r in last_range.rays:
                     if np.isfinite(r.distance): pts.append((s.orientation.apply(r.direction*r.distance)+gt.position).tolist())
                 rec["range_world_points"]=pts
+                rec["range_camera_overlay"]=_range_to_camera_overlay(last_range,cam)
         records.append(rec)
     errors=np.array([r['error_deg'] for r in records]); metrics={"scenario":scenario,"duration_s":duration,"seed":seed,"camera_enabled":camera_enabled,"range_enabled":range_enabled,"orientation_rmse_deg":float(np.sqrt(np.mean(errors**2))),"orientation_mae_deg":float(np.mean(np.abs(errors))),"orientation_max_deg":float(np.max(errors))}
-    return {"meta":{"imu_hz":imu_hz,"camera_hz":camera_hz,"range_hz":range_hz,"camera":{"width":cam.width,"height":cam.height,"fov_deg":70.0},"range":{"rows":rngs.rows,"cols":rngs.cols},"scene":SCENE},"metrics":metrics,"records":records}
+    return {"meta":{"imu_hz":imu_hz,"camera_hz":camera_hz,"range_hz":range_hz,"camera":{"width":cam.width,"height":cam.height,"fov_deg":70.0},"range":{"rows":rngs.rows,"cols":rngs.cols,"tilt_down_deg":rngs.tilt_down_deg},"scene":SCENE},"metrics":metrics,"records":records}
 
 def compare_modes(scenario='combined',duration=10.,seed=42):
     modes={"imu_only":(False,False),"imu_camera":(True,False),"imu_range":(False,True),"all":(True,True)}
