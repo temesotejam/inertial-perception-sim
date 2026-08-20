@@ -14,28 +14,39 @@ class ImuSimulator:
         return ImuSample(gt.timestamp,gyro,acc)
 
 class CameraSimulator:
-    """Generic monocular camera with a real synthetic-image frontend."""
-    def __init__(self,rng,width=640,height=480,fov_deg=70.,pixel_noise_std=.25,dropout=.03,render_width=80,render_height=60,max_features=32):
+    """Generic monocular camera with image-space feature tracking.
+
+    Harris corners are detected from the rendered RGB image. Persistent IDs are
+    assigned only from 2-D pixel proximity to the previous frame; renderer
+    world hits are retained as simulation-only debug/evaluation metadata and are
+    not used to establish tracks or estimate attitude.
+    """
+    def __init__(self,rng,width=640,height=480,fov_deg=70.,pixel_noise_std=.25,dropout=.03,render_width=80,render_height=60,max_features=32,track_radius_px=42.):
         self.rng=rng; self.width=width; self.height=height; self.fov_deg=fov_deg
         self.fx=width/(2*np.tan(np.radians(fov_deg)/2)); self.fy=self.fx; self.cx=width/2; self.cy=height/2
-        self.pixel_noise_std=pixel_noise_std; self.dropout=dropout; self.render_width=render_width; self.render_height=render_height; self.max_features=max_features
+        self.pixel_noise_std=pixel_noise_std; self.dropout=dropout; self.render_width=render_width; self.render_height=render_height; self.max_features=max_features; self.track_radius_px=track_radius_px
         self._next_id=0; self._previous=[]
-    def _assign_id(self,world_position):
-        best=None; best_d=.22
-        for f in self._previous:
-            if f.world_position is None: continue
-            d=float(np.linalg.norm(f.world_position-world_position))
-            if d<best_d:best=f.feature_id;best_d=d
-        if best is None:best=self._next_id;self._next_id+=1
-        return int(best)
+    def _assign_ids(self,candidates):
+        available=set(range(len(self._previous))); assigned=[]
+        for u,v,score,pw in sorted(candidates,key=lambda x:x[2],reverse=True):
+            best=None; best_d=self.track_radius_px
+            for j in available:
+                f=self._previous[j]; d=float(np.hypot(f.u-u,f.v-v))
+                if d<best_d: best=j; best_d=d
+            if best is None:
+                fid=self._next_id; self._next_id+=1
+            else:
+                fid=self._previous[best].feature_id; available.remove(best)
+            assigned.append(CameraFeature(int(fid),float(u),float(v),float(max(score,0.)),pw))
+        return assigned
     def sample(self,gt):
         rgb,depth,world=render_camera(gt,self.render_width,self.render_height,self.fov_deg)
-        detected=detect_harris_features(rgb,depth,world,self.max_features);feats=[];sx=self.width/self.render_width;sy=self.height/self.render_height
+        detected=detect_harris_features(rgb,depth,world,self.max_features);sx=self.width/self.render_width;sy=self.height/self.render_height;candidates=[]
         for x,y,score,pw in detected:
             if self.rng.random()<self.dropout:continue
             u=(x+.5)*sx+self.rng.normal(0,self.pixel_noise_std);v=(y+.5)*sy+self.rng.normal(0,self.pixel_noise_std)
-            feats.append(CameraFeature(self._assign_id(pw),float(u),float(v),float(max(score,0.)),pw))
-        self._previous=feats
+            candidates.append((u,v,score,pw))
+        feats=self._assign_ids(candidates);self._previous=feats
         return CameraFrame(gt.timestamp,feats,rgb,self.render_width,self.render_height)
     def bearing_from_pixel(self,u,v):
         b=np.array([1.,-(u-self.cx)/self.fx,-(v-self.cy)/self.fy]);return b/np.linalg.norm(b)
