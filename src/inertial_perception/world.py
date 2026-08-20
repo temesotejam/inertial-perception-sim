@@ -3,11 +3,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from .types import GroundTruthState
 
-# Fixed visual landmarks used by the generic monocular frontend.
 LANDMARKS=np.array([[4,-1.8,.4],[4,-1,1.4],[4,-.2,.8],[4,.5,1.8],[4,1.2,.5],[4,1.8,1.3],[3,-1.3,2],[3.5,.9,2.2],[5,0,1.1]],float)
 
-# The scene description is deliberately product-agnostic and JSON-friendly so
-# the Python simulator and browser viewer can render the same world.
 SCENE={
     "terrain":{"x_min":-2.0,"x_max":6.0,"y_min":-3.0,"y_max":3.0,"step":0.35,
                "amplitude":0.075,"wave_x":0.72,"wave_y":1.08,"bump":0.105,
@@ -63,8 +60,6 @@ def _ray_pillar(origin,direction,obj,max_range):
     return None
 
 def _ray_terrain(origin,direction,max_range):
-    # Height-field ray marching followed by bisection. This is intentionally
-    # simple and deterministic; it is sufficient for the small generic ToF grid.
     prev_t=0.0; prev_f=origin[2]-terrain_height(origin[0],origin[1])
     for t in np.linspace(max_range/120,max_range,120):
         p=origin+t*direction; f=p[2]-terrain_height(p[0],p[1])
@@ -93,10 +88,20 @@ def euler_profile(t: float, scenario: str):
     elif scenario=="roll": e=np.radians([20*np.sin(2*np.pi*.35*t),0,0])
     elif scenario=="pitch": e=np.radians([0,18*np.sin(2*np.pi*.28*t),0])
     elif scenario=="yaw": e=np.radians([0,0,35*np.sin(2*np.pi*.18*t)])
+    elif scenario=="translation": e=np.radians([7*np.sin(.55*t),5*np.sin(.43*t+.3),10*np.sin(.37*t+.6)])
     else: e=np.radians([16*np.sin(2*np.pi*.31*t),12*np.sin(2*np.pi*.23*t+.4),28*np.sin(2*np.pi*.17*t+.8)])
     return e
+
+def translation_profile(t: float, scenario: str):
+    if scenario!="translation":return np.array([0.,0.,1.]),np.zeros(3),np.zeros(3)
+    ax,ay,az=.70,.52,.65
+    p=np.array([.45*np.sin(ax*t),.30*np.sin(ay*t+.3),1.+.10*np.sin(az*t)])
+    v=np.array([.45*ax*np.cos(ax*t),.30*ay*np.cos(ay*t+.3),.10*az*np.cos(az*t)])
+    a=np.array([-.45*ax*ax*np.sin(ax*t),-.30*ay*ay*np.sin(ay*t+.3),-.10*az*az*np.sin(az*t)])
+    return p,v,a
 
 def truth_at(t: float, scenario: str, eps: float=1e-4) -> GroundTruthState:
     r=Rotation.from_euler("xyz",euler_profile(t,scenario)); r2=Rotation.from_euler("xyz",euler_profile(t+eps,scenario))
     omega=(r.inv()*r2).as_rotvec()/eps
-    return GroundTruthState(t,np.array([0.,0.,1.]),np.zeros(3),np.zeros(3),r,omega)
+    p,v,a=translation_profile(t,scenario)
+    return GroundTruthState(t,p,v,a,r,omega)
