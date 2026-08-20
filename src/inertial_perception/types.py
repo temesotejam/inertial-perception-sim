@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 from scipy.spatial.transform import Rotation
 
@@ -43,6 +43,9 @@ class State:
     timestamp: float
     orientation: Rotation
     gyro_bias: np.ndarray
+    position: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    velocity: np.ndarray = field(default_factory=lambda: np.zeros(3))
+    accel_bias: np.ndarray = field(default_factory=lambda: np.zeros(3))
 
 @dataclass
 class GroundTruthState:
