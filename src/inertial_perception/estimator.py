@@ -5,7 +5,7 @@ from .types import State
 from .math3d import blend_rotation, align_vector_correction
 
 class AttitudeEstimator:
-    def __init__(self,initial_orientation=None,camera_gain=.22,range_gain=.12,accel_gain=.008):
+    def __init__(self,initial_orientation=None,camera_gain=.22,range_gain=.16,accel_gain=.008):
         self.orientation=initial_orientation or Rotation.identity(); self.gyro_bias=np.zeros(3); self.last_t=None; self.camera_gain=camera_gain; self.range_gain=range_gain; self.accel_gain=accel_gain; self.last_event={"kind":"init","residual_deg":0.,"correction_deg":0.}
     def propagate(self,imu):
         if self.last_t is not None:
@@ -21,6 +21,25 @@ class AttitudeEstimator:
         quality=count_quality*rms_quality;gain=self.camera_gain*quality
         self.orientation=blend_rotation(self.orientation,target,gain);correction=(self.orientation*before.inv()).magnitude()
         self.last_event={"kind":"camera_relative","residual_deg":float(np.degrees(residual)),"correction_deg":float(np.degrees(correction)),"tracks":int(tracks),"track_rms_deg":float(track_rms_deg),"visual_rotation_deg":float(np.degrees(relative_rotation.magnitude())),"imu_rotation_deg":float(np.degrees(imu_delta.magnitude())),"visual_quality":float(quality),"camera_gain_applied":float(gain)}
+    def update_range_relative(self,previous_normal,current_normal,reference_orientation,pairs=0,range_rms_m=float('nan'),translation_m=float('nan'),range_rotation_deg=float('nan')):
+        """Apply only the Range-observable tilt correction.
+
+        The previous measured surface normal is mapped into the world by the
+        previous fused orientation. The current measured normal is mapped by
+        the current IMU/Camera prediction. Their minimal world-frame alignment
+        corrects tilt while preserving rotation about that normal (Yaw on a
+        flat support plane).
+        """
+        desired_world=reference_orientation.apply(np.asarray(previous_normal,float))
+        current_world=self.orientation.apply(np.asarray(current_normal,float))
+        corr=align_vector_correction(current_world,desired_world);residual=corr.magnitude();before=self.orientation
+        count_quality=max(0.0,min(1.0,(pairs-7)/16.0));rms_quality=max(0.0,min(1.0,1.0-range_rms_m/.10)) if np.isfinite(range_rms_m) else 0.0
+        translation_quality=max(0.0,min(1.0,1.0-translation_m/.18)) if np.isfinite(translation_m) else 0.0
+        quality=count_quality*rms_quality*translation_quality;gain=self.range_gain*quality
+        target=corr*self.orientation;self.orientation=blend_rotation(self.orientation,target,gain);correction=(self.orientation*before.inv()).magnitude()
+        imu_delta=reference_orientation.inv()*before
+        self.last_event={"kind":"range_relative","residual_deg":float(np.degrees(residual)),"correction_deg":float(np.degrees(correction)),"pairs":int(pairs),"range_rms_m":float(range_rms_m),"range_translation_m":float(translation_m),"range_rotation_deg":float(range_rotation_deg),"imu_rotation_deg":float(np.degrees(imu_delta.magnitude())),"range_quality":float(quality),"range_gain_applied":float(gain)}
     def update_range_floor(self,normal_body):
+        """Legacy Version 1 absolute-floor update, kept only for compatibility."""
         corr=align_vector_correction(self.orientation.apply(normal_body),np.array([0.,0.,1.]));residual=corr.magnitude();before=self.orientation;self.orientation=blend_rotation(self.orientation,corr*self.orientation,self.range_gain);correction=(self.orientation*before.inv()).magnitude();self.last_event={"kind":"range","residual_deg":float(np.degrees(residual)),"correction_deg":float(np.degrees(correction))}
     def state(self,t): return State(t,self.orientation,self.gyro_bias.copy())
