@@ -15,11 +15,15 @@ class CameraFeature:
     u: float
     v: float
     confidence: float = 1.0
+    world_position: np.ndarray | None = None
 
 @dataclass
 class CameraFrame:
     timestamp: float
     features: list[CameraFeature]
+    image_rgb: np.ndarray | None = None
+    render_width: int = 0
+    render_height: int = 0
 
 @dataclass
 class RayMeasurement:

@@ -1,87 +1,21 @@
 // Ground-truth depth evaluation for the dense RGB-D viewer.
-// Computes an independent camera depth map by ray-casting the shared scene,
-// then compares it with a 40x30 edge-aware interpolation from sparse ToF anchors.
+// Uses the exact camera-frame timestamp/pose exported by Python so the GT map,
+// displayed RGB image, sparse ToF projection, and detected features share one frame.
 (() => {
-  const canvas=document.querySelector('#depthError');
-  const metrics=document.querySelector('#depthMetrics');
-  if(!canvas||!metrics)return;
-  const ec=canvas.getContext('2d');
-  const W=40,H=30,MAX_R=4.0;
-  const guide=document.createElement('canvas'); guide.width=W;guide.height=H;
-  const gx=guide.getContext('2d',{willReadFrequently:true});
-  let lastT=-1,lastResult=null;
-
+  const canvas=document.querySelector('#depthError'),metrics=document.querySelector('#depthMetrics');if(!canvas||!metrics)return;
+  const ec=canvas.getContext('2d'),W=40,H=30,MAX_R=4.0,guide=document.createElement('canvas');guide.width=W;guide.height=H;
+  const gx=guide.getContext('2d',{willReadFrequently:true});let lastT=-1,lastResult=null;
   function resize(){const r=canvas.getBoundingClientRect(),d=devicePixelRatio||1;canvas.width=r.width*d;canvas.height=r.height*d;ec.setTransform(d,0,0,d,0,0)}
   function rgbAt(img,x,y){x=Math.max(0,Math.min(W-1,Math.round(x)));y=Math.max(0,Math.min(H-1,Math.round(y)));let k=(y*W+x)*4;return[img[k],img[k+1],img[k+2]]}
-  function cd(a,b){let r=a[0]-b[0],g=a[1]-b[1],bl=a[2]-b[2];return Math.sqrt(r*r+g*g+bl*bl)}
-  function norm(v){let m=Math.hypot(...v);return v.map(x=>x/m)}
-
-  function estimateDense(r){
-    if(r.range_dropped||!r.range_camera_overlay?.length)return null;
-    gx.clearRect(0,0,W,H);gx.drawImage(camera,0,0,W,H);const img=gx.getImageData(0,0,W,H).data;
-    const anchors=r.range_camera_overlay.map(([u,v,d])=>({x:u/640*W,y:v/480*H,d,c:rgbAt(img,u/640*W,v/480*H)}));
-    const out=new Float32Array(W*H);out.fill(NaN);const sigmaS=5.5,sigmaC=42,maxRadius=12;
-    for(let y=0;y<H;y++)for(let x=0;x<W;x++){
-      let c=rgbAt(img,x,y),ws=0,ds=0,nearest=1e9;
-      for(const a of anchors){let dx=x-a.x,dy=y-a.y,rr=Math.hypot(dx,dy);if(rr>maxRadius)continue;nearest=Math.min(nearest,rr);let dc=cd(c,a.c),w=Math.exp(-(rr*rr)/(2*sigmaS*sigmaS))*Math.exp(-(dc*dc)/(2*sigmaC*sigmaC));ws+=w;ds+=w*a.d}
-      if(ws>.08&&nearest<maxRadius)out[y*W+x]=ds/ws;
-    }
-    return out;
-  }
-
-  function rayBox(o,d,obj){
-    let c=obj.center,s=obj.size,lo=c.map((x,k)=>x-s[k]/2),hi=c.map((x,k)=>x+s[k]/2),tmin=-Infinity,tmax=Infinity;
-    for(let k=0;k<3;k++){
-      if(Math.abs(d[k])<1e-10){if(o[k]<lo[k]||o[k]>hi[k])return null;continue}
-      let a=(lo[k]-o[k])/d[k],b=(hi[k]-o[k])/d[k];if(a>b)[a,b]=[b,a];tmin=Math.max(tmin,a);tmax=Math.min(tmax,b);if(tmax<Math.max(tmin,0))return null;
-    }
-    let t=Math.max(tmin,0);return t<=MAX_R?t:null;
-  }
-  function rayPillar(o,d,obj){
-    let [cx,cy,cz]=obj.center,r=obj.radius,z0=cz-obj.height/2,z1=cz+obj.height/2,ox=o[0]-cx,oy=o[1]-cy,a=d[0]*d[0]+d[1]*d[1];if(a<1e-12)return null;
-    let b=2*(ox*d[0]+oy*d[1]),c=ox*ox+oy*oy-r*r,disc=b*b-4*a*c;if(disc<0)return null;
-    let roots=[(-b-Math.sqrt(disc))/(2*a),(-b+Math.sqrt(disc))/(2*a)].sort((x,y)=>x-y);
-    for(const t of roots)if(t>=0&&t<=MAX_R){let z=o[2]+t*d[2];if(z>=z0&&z<=z1)return t}return null;
-  }
-  function rayTerrain(o,d){
-    let prevT=0,prevF=o[2]-terrainHeight(o[0],o[1]),N=70;
-    for(let n=1;n<=N;n++){
-      let t=MAX_R*n/N,p=[o[0]+t*d[0],o[1]+t*d[1],o[2]+t*d[2]],f=p[2]-terrainHeight(p[0],p[1]);
-      if(f<=0&&prevF>0){let lo=prevT,hi=t;for(let q=0;q<8;q++){let m=(lo+hi)/2,x=o[0]+m*d[0],y=o[1]+m*d[1],z=o[2]+m*d[2];if(z-terrainHeight(x,y)>0)lo=m;else hi=m}return(lo+hi)/2}
-      prevT=t;prevF=f;
-    }return null;
-  }
-  function sceneDistance(o,d){
-    let best=rayTerrain(o,d);for(const obj of data[mode].meta.scene.objects){let t=obj.type==='pillar'?rayPillar(o,d,obj):rayBox(o,d,obj);if(t!=null&&(best==null||t<best))best=t}return best;
-  }
-  function truthDepth(r){
-    const out=new Float32Array(W*H);out.fill(NaN);let fov=(data[mode].meta.camera.fov_deg||70)*Math.PI/180,fx=W/(2*Math.tan(fov/2)),fy=fx,cx=W/2,cy=H/2;
-    for(let y=0;y<H;y++)for(let x=0;x<W;x++){
-      let db=norm([1,-((x+.5)-cx)/fx,-((y+.5)-cy)/fy]),dw=norm(rot(r.true_euler,db)),t=sceneDistance(SENSOR_POS,dw);if(t!=null)out[y*W+x]=t;
-    }return out;
-  }
-  function evaluate(r){
-    const est=estimateDense(r);if(!est)return null;const gt=truthDepth(r);let se=0,ae=0,n=0,gtN=0,edgeSE=0,edgeN=0;
-    for(let y=0;y<H;y++)for(let x=0;x<W;x++){
-      let k=y*W+x,g=gt[k],e=est[k];if(Number.isFinite(g))gtN++;if(!Number.isFinite(g)||!Number.isFinite(e))continue;let er=e-g;se+=er*er;ae+=Math.abs(er);n++;
-      let edge=false;if(x+1<W&&Number.isFinite(gt[k+1])&&Math.abs(gt[k+1]-g)>.18)edge=true;if(y+1<H&&Number.isFinite(gt[k+W])&&Math.abs(gt[k+W]-g)>.18)edge=true;if(edge){edgeSE+=er*er;edgeN++}
-    }
-    return {est,gt,rmse:n?Math.sqrt(se/n):NaN,mae:n?ae/n:NaN,coverage:gtN?n/gtN:0,valid:n,edgeRmse:edgeN?Math.sqrt(edgeSE/edgeN):NaN,edgeN};
-  }
+  function cd(a,b){let r=a[0]-b[0],g=a[1]-b[1],bl=a[2]-b[2];return Math.sqrt(r*r+g*g+bl*bl)}function norm(v){let m=Math.hypot(...v);return v.map(x=>x/m)}
+  function estimateDense(r){if(r.range_dropped||!r.range_camera_overlay?.length||r.camera_timestamp==null)return null;gx.clearRect(0,0,W,H);gx.drawImage(camera,0,0,W,H);const img=gx.getImageData(0,0,W,H).data;const anchors=r.range_camera_overlay.map(([u,v,d])=>({x:u/640*W,y:v/480*H,d,c:rgbAt(img,u/640*W,v/480*H)}));const out=new Float32Array(W*H);out.fill(NaN);const sigmaS=5.5,sigmaC=42,maxRadius=12;for(let y=0;y<H;y++)for(let x=0;x<W;x++){let c=rgbAt(img,x,y),ws=0,ds=0,nearest=1e9;for(const a of anchors){let dx=x-a.x,dy=y-a.y,rr=Math.hypot(dx,dy);if(rr>maxRadius)continue;nearest=Math.min(nearest,rr);let dc=cd(c,a.c),w=Math.exp(-(rr*rr)/(2*sigmaS*sigmaS))*Math.exp(-(dc*dc)/(2*sigmaC*sigmaC));ws+=w;ds+=w*a.d}if(ws>.08&&nearest<maxRadius)out[y*W+x]=ds/ws}return out}
+  function rayBox(o,d,obj){let c=obj.center,s=obj.size,lo=c.map((x,k)=>x-s[k]/2),hi=c.map((x,k)=>x+s[k]/2),tmin=-Infinity,tmax=Infinity;for(let k=0;k<3;k++){if(Math.abs(d[k])<1e-10){if(o[k]<lo[k]||o[k]>hi[k])return null;continue}let a=(lo[k]-o[k])/d[k],b=(hi[k]-o[k])/d[k];if(a>b)[a,b]=[b,a];tmin=Math.max(tmin,a);tmax=Math.min(tmax,b);if(tmax<Math.max(tmin,0))return null}let t=Math.max(tmin,0);return t<=MAX_R?t:null}
+  function rayPillar(o,d,obj){let[cx,cy,cz]=obj.center,r=obj.radius,z0=cz-obj.height/2,z1=cz+obj.height/2,ox=o[0]-cx,oy=o[1]-cy,a=d[0]*d[0]+d[1]*d[1];if(a<1e-12)return null;let b=2*(ox*d[0]+oy*d[1]),c=ox*ox+oy*oy-r*r,disc=b*b-4*a*c;if(disc<0)return null;let roots=[(-b-Math.sqrt(disc))/(2*a),(-b+Math.sqrt(disc))/(2*a)].sort((x,y)=>x-y);for(const t of roots)if(t>=0&&t<=MAX_R){let z=o[2]+t*d[2];if(z>=z0&&z<=z1)return t}return null}
+  function rayTerrain(o,d){let prevT=0,prevF=o[2]-terrainHeight(o[0],o[1]),N=70;for(let n=1;n<=N;n++){let t=MAX_R*n/N,p=[o[0]+t*d[0],o[1]+t*d[1],o[2]+t*d[2]],f=p[2]-terrainHeight(p[0],p[1]);if(f<=0&&prevF>0){let lo=prevT,hi=t;for(let q=0;q<8;q++){let m=(lo+hi)/2,x=o[0]+m*d[0],y=o[1]+m*d[1],z=o[2]+m*d[2];if(z-terrainHeight(x,y)>0)lo=m;else hi=m}return(lo+hi)/2}prevT=t;prevF=f}return null}
+  function sceneDistance(o,d){let best=rayTerrain(o,d);for(const obj of data[mode].meta.scene.objects){let t=obj.type==='pillar'?rayPillar(o,d,obj):rayBox(o,d,obj);if(t!=null&&(best==null||t<best))best=t}return best}
+  function truthDepth(r){if(!r.camera_pose_euler)return null;const out=new Float32Array(W*H);out.fill(NaN);let fov=(data[mode].meta.camera.fov_deg||70)*Math.PI/180,fx=W/(2*Math.tan(fov/2)),fy=fx,cx=W/2,cy=H/2;for(let y=0;y<H;y++)for(let x=0;x<W;x++){let db=norm([1,-((x+.5)-cx)/fx,-((y+.5)-cy)/fy]),dw=norm(rot(r.camera_pose_euler,db)),t=sceneDistance(SENSOR_POS,dw);if(t!=null)out[y*W+x]=t}return out}
+  function evaluate(r){const est=estimateDense(r),gt=truthDepth(r);if(!est||!gt)return null;let se=0,ae=0,n=0,gtN=0,edgeSE=0,edgeN=0;for(let y=0;y<H;y++)for(let x=0;x<W;x++){let k=y*W+x,g=gt[k],e=est[k];if(Number.isFinite(g))gtN++;if(!Number.isFinite(g)||!Number.isFinite(e))continue;let er=e-g;se+=er*er;ae+=Math.abs(er);n++;let edge=false;if(x+1<W&&Number.isFinite(gt[k+1])&&Math.abs(gt[k+1]-g)>.18)edge=true;if(y+1<H&&Number.isFinite(gt[k+W])&&Math.abs(gt[k+W]-g)>.18)edge=true;if(edge){edgeSE+=er*er;edgeN++}}return{est,gt,rmse:n?Math.sqrt(se/n):NaN,mae:n?ae/n:NaN,coverage:gtN?n/gtN:0,valid:n,edgeRmse:edgeN?Math.sqrt(edgeSE/edgeN):NaN,edgeN}}
   function errColor(e){let q=Math.min(1,Math.abs(e)/.75);return e>=0?`rgba(220,55,45,${.18+.82*q})`:`rgba(35,105,220,${.18+.82*q})`}
-  function paint(res){
-    resize();let w=canvas.clientWidth,h=canvas.clientHeight;ec.clearRect(0,0,w,h);ec.fillStyle='#eef2f7';ec.fillRect(0,0,w,h);
-    if(!res){ec.fillStyle='#64748b';ec.font='14px system-ui';ec.fillText('No comparable depth data',16,28);metrics.textContent='No depth evaluation available';return}
-    let cw=w/W,ch=h/H;for(let y=0;y<H;y++)for(let x=0;x<W;x++){let k=y*W+x,g=res.gt[k],e=res.est[k];if(!Number.isFinite(g)||!Number.isFinite(e))continue;ec.fillStyle=errColor(e-g);ec.fillRect(x*cw,y*ch,cw+1,ch+1)}
-    ec.fillStyle='rgba(15,23,42,.82)';ec.fillRect(10,10,250,56);ec.fillStyle='white';ec.font='12px system-ui';ec.fillText(`Depth error 40×30 | compared ${res.valid}`,18,27);ec.fillText(`RMSE ${res.rmse.toFixed(3)} m | MAE ${res.mae.toFixed(3)} m`,18,44);ec.fillText(`coverage ${(res.coverage*100).toFixed(1)}%`,18,60);
-    metrics.textContent=`RMSE ${res.rmse.toFixed(3)} m · MAE ${res.mae.toFixed(3)} m · GT coverage ${(res.coverage*100).toFixed(1)}% · boundary RMSE ${Number.isFinite(res.edgeRmse)?res.edgeRmse.toFixed(3):'—'} m (${res.edgeN} boundary pixels). Red = estimated too far, blue = estimated too near.`;
-  }
-
-  const prev=drawRgbdOverlay;
-  drawRgbdOverlay=function(r){
-    prev(r);
-    if(lastResult==null||Math.abs(r.t-lastT)>=.19){lastResult=evaluate(r);lastT=r.t}
-    paint(lastResult);
-  };
-  window.addEventListener('resize',()=>paint(lastResult));
+  function paint(res){resize();let w=canvas.clientWidth,h=canvas.clientHeight;ec.clearRect(0,0,w,h);ec.fillStyle='#eef2f7';ec.fillRect(0,0,w,h);if(!res){ec.fillStyle='#64748b';ec.font='14px system-ui';ec.fillText('No comparable synchronized depth data',16,28);metrics.textContent='No synchronized depth evaluation available';return}let cw=w/W,ch=h/H;for(let y=0;y<H;y++)for(let x=0;x<W;x++){let k=y*W+x,g=res.gt[k],e=res.est[k];if(!Number.isFinite(g)||!Number.isFinite(e))continue;ec.fillStyle=errColor(e-g);ec.fillRect(x*cw,y*ch,cw+1,ch+1)}ec.fillStyle='rgba(15,23,42,.82)';ec.fillRect(10,10,250,56);ec.fillStyle='white';ec.font='12px system-ui';ec.fillText(`Depth error 40×30 | compared ${res.valid}`,18,27);ec.fillText(`RMSE ${res.rmse.toFixed(3)} m | MAE ${res.mae.toFixed(3)} m`,18,44);ec.fillText(`coverage ${(res.coverage*100).toFixed(1)}%`,18,60);metrics.textContent=`RMSE ${res.rmse.toFixed(3)} m · MAE ${res.mae.toFixed(3)} m · GT coverage ${(res.coverage*100).toFixed(1)}% · boundary RMSE ${Number.isFinite(res.edgeRmse)?res.edgeRmse.toFixed(3):'—'} m (${res.edgeN} boundary pixels). Red = estimated too far, blue = estimated too near.`}
+  const prev=drawRgbdOverlay;drawRgbdOverlay=function(r){prev(r);if(lastResult==null||r.camera_timestamp!==lastT){lastResult=evaluate(r);lastT=r.camera_timestamp}paint(lastResult)};window.addEventListener('resize',()=>paint(lastResult));
 })();
