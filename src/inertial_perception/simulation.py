@@ -34,36 +34,23 @@ def _diag(est):
  if not hasattr(est,'P'):return {}
  d=np.maximum(np.diag(est.P),0)
  if len(d)>=15:
-  d=d[:15];return {'eskf_sigma_pos_m':np.sqrt(d[:3]).tolist(),'eskf_sigma_vel_mps':np.sqrt(d[3:6]).tolist(),'eskf_sigma_att_deg':np.degrees(np.sqrt(d[6:9])).tolist(),'eskf_sigma_bias_dps':np.degrees(np.sqrt(d[9:12])).tolist(),'eskf_sigma_accel_bias':np.sqrt(d[12:15]).tolist(),'eskf_covariance_dim':int(est.P.shape[0])}
+  core=d[:15];return {'eskf_sigma_pos_m':np.sqrt(core[:3]).tolist(),'eskf_sigma_vel_mps':np.sqrt(core[3:6]).tolist(),'eskf_sigma_att_deg':np.degrees(np.sqrt(core[6:9])).tolist(),'eskf_sigma_bias_dps':np.degrees(np.sqrt(core[9:12])).tolist(),'eskf_sigma_accel_bias':np.sqrt(core[12:15]).tolist(),'eskf_covariance_dim':int(est.P.shape[0])}
  return {'eskf_sigma_att_deg':np.degrees(np.sqrt(d[:3])).tolist(),'eskf_sigma_bias_dps':np.degrees(np.sqrt(d[3:6])).tolist()}
 
 def run_simulation(scenario='combined',duration=10.,seed=42,camera_enabled=True,range_enabled=True,imu_hz=200,camera_hz=15,range_hz=15,estimator_kind='ins_eskf'):
  rng=np.random.default_rng(seed);imu=ImuSimulator(rng);cam=CameraSimulator(rng);rngs=GridRangeSimulator(rng);gt0=truth_at(0,scenario);est=_make_estimator(estimator_kind,gt0);dt=1/imu_hz;next_cam=next_range=0.;records=[]
  last_cam=last_range=last_cam_gt=last_range_gt=None;prev_cam=None;prev_cam_reference=None;last_visual=None;prev_range=None;prev_range_reference=None;prev_range_position=None;last_range_frontend=None
- clone_min_dt=.20;clone_force_refresh_dt=.40
  for k in range(int(round(duration*imu_hz))+1):
-  t=k*dt;gt=truth_at(t,scenario);est.propagate(imu.sample(gt));event={'kind':'imu','residual_deg':0.,'correction_deg':0.,'filter':estimator_kind};camera_sampled=range_sampled=False;refresh_camera_clone=False
+  t=k*dt;gt=truth_at(t,scenario);est.propagate(imu.sample(gt));event={'kind':'imu','residual_deg':0.,'correction_deg':0.,'filter':estimator_kind};camera_sampled=range_sampled=False
   if camera_enabled and t+1e-9>=next_cam:
-   last_cam_gt=gt;last_cam=cam.sample(gt);full_clone=hasattr(est,'set_camera_clone')
-   if full_clone:
-    if prev_cam is None:
-     refresh_camera_clone=True
-    else:
-     baseline=float(last_cam.timestamp-prev_cam.timestamp)
-     if baseline+1e-9>=clone_min_dt:
-      visual_prior=prev_cam_reference.inv()*est.orientation if prev_cam_reference is not None else None;vis=visual_relative_rotation(prev_cam,last_cam,cam,rotation_prior=visual_prior)
-      if vis is not None and prev_cam_reference is not None:
-       range_tilt_support=bool(range_enabled and last_range_frontend is not None and last_range_frontend.get('range_observable')=='tilt_only' and last_range_frontend.get('range_quality',0.)>.05)
-       est.update_camera_relative(vis['rotation'],prev_cam_reference,vis['tracks'],vis['track_rms_deg'],parallax_detected=vis.get('parallax_detected',False),range_tilt_supported=range_tilt_support)
-       event=est.last_event.copy();event['candidate_tracks']=vis.get('candidate_tracks',vis['tracks']);event['prior_used']=vis.get('prior_used',False);event['prior_kept_tracks']=vis.get('prior_kept_tracks',vis['tracks']);event['prior_residual_rms_deg']=vis.get('prior_residual_rms_deg',float('nan'));event['parallax_detected']=vis.get('parallax_detected',False);event['range_tilt_support']=range_tilt_support;event['visual_model']=vis.get('visual_model','rotation_only');event['camera_clone_baseline_s']=baseline;last_visual=event.copy();refresh_camera_clone=True
-      elif baseline>=clone_force_refresh_dt:
-       refresh_camera_clone=True
-   else:
-    visual_prior=prev_cam_reference.inv()*est.orientation if prev_cam_reference is not None else None;vis=visual_relative_rotation(prev_cam,last_cam,cam,rotation_prior=visual_prior)
-    if vis is not None and prev_cam_reference is not None:
-     est.update_camera_relative(vis['rotation'],prev_cam_reference,vis['tracks'],vis['track_rms_deg']);event=est.last_event.copy();event['candidate_tracks']=vis.get('candidate_tracks',vis['tracks']);event['prior_used']=vis.get('prior_used',False);event['prior_kept_tracks']=vis.get('prior_kept_tracks',vis['tracks']);event['prior_residual_rms_deg']=vis.get('prior_residual_rms_deg',float('nan'));event['parallax_detected']=vis.get('parallax_detected',False);event['visual_model']=vis.get('visual_model','rotation_only');last_visual=event.copy()
-    prev_cam=last_cam
-   camera_sampled=True;next_cam+=1/camera_hz
+   last_cam_gt=gt;last_cam=cam.sample(gt);visual_prior=prev_cam_reference.inv()*est.orientation if prev_cam_reference is not None else None;vis=visual_relative_rotation(prev_cam,last_cam,cam,rotation_prior=visual_prior)
+   if vis is not None and prev_cam_reference is not None:
+    range_tilt_support=bool(range_enabled and last_range_frontend is not None and last_range_frontend.get('range_observable')=='tilt_only' and last_range_frontend.get('range_quality',0.)>.05)
+    guarded_parallax=bool(vis.get('parallax_detected',False) and not range_tilt_support)
+    if hasattr(est,'position'):est.update_camera_relative(vis['rotation'],prev_cam_reference,vis['tracks'],vis['track_rms_deg'],parallax_detected=guarded_parallax,range_tilt_supported=range_tilt_support,enable_clone_bias=False)
+    else:est.update_camera_relative(vis['rotation'],prev_cam_reference,vis['tracks'],vis['track_rms_deg'])
+    event=est.last_event.copy();event['candidate_tracks']=vis.get('candidate_tracks',vis['tracks']);event['prior_used']=vis.get('prior_used',False);event['prior_kept_tracks']=vis.get('prior_kept_tracks',vis['tracks']);event['prior_residual_rms_deg']=vis.get('prior_residual_rms_deg',float('nan'));event['parallax_detected']=vis.get('parallax_detected',False);event['parallax_guard_applied']=guarded_parallax;event['range_tilt_support']=range_tilt_support;event['visual_model']=vis.get('visual_model','rotation_only');last_visual=event.copy()
+   prev_cam=last_cam;camera_sampled=True;next_cam+=1/camera_hz
   if range_enabled and t+1e-9>=next_range:
    last_range_gt=gt;last_range=rngs.sample(gt);rr=range_relative_rotation(prev_range,last_range);rt=None;range_diag={}
    if prev_range is not None and prev_range_reference is not None and hasattr(est,'position'):
@@ -75,10 +62,8 @@ def run_simulation(scenario='combined',duration=10.,seed=42,camera_enabled=True,
    if range_diag:last_range_frontend=range_diag.copy()
    prev_range=last_range;range_sampled=True;next_range+=1/range_hz
   if camera_sampled:
-   if hasattr(est,'set_camera_clone'):
-    if refresh_camera_clone:
-     prev_cam=last_cam;prev_cam_reference=est.orientation;est.set_camera_clone()
-   else:prev_cam_reference=est.orientation
+   prev_cam_reference=est.orientation
+   if hasattr(est,'set_camera_clone'):est.set_camera_clone()
   if range_sampled:
    prev_range_reference=est.orientation
    if hasattr(est,'position'):prev_range_position=est.position.copy()
@@ -98,7 +83,7 @@ def run_simulation(scenario='combined',duration=10.,seed=42,camera_enabled=True,
  errors=np.array([r['error_deg'] for r in records]);metrics={'scenario':scenario,'duration_s':duration,'seed':seed,'camera_enabled':camera_enabled,'range_enabled':range_enabled,'estimator_kind':estimator_kind,'orientation_rmse_deg':float(np.sqrt(np.mean(errors**2))),'orientation_mae_deg':float(np.mean(np.abs(errors))),'orientation_max_deg':float(np.max(errors)),'final_gyro_bias_dps':np.degrees(est.gyro_bias).tolist()}
  if hasattr(est,'position'):
   pe=np.array([r['position_error_m'] for r in records]);ze=np.array([r['vertical_position_error_m'] for r in records]);ve=np.array([r['velocity_error_mps'] for r in records]);metrics.update({'position_rmse_m':float(np.sqrt(np.mean(pe**2))),'vertical_position_rmse_m':float(np.sqrt(np.mean(ze**2))),'velocity_rmse_mps':float(np.sqrt(np.mean(ve**2))),'final_position_error_m':float(pe[-1]),'final_vertical_position_error_m':float(ze[-1]),'final_velocity_error_mps':float(ve[-1]),'final_accel_bias':est.accel_bias.tolist()})
- return {'meta':{'imu_hz':imu_hz,'camera_hz':camera_hz,'range_hz':range_hz,'estimator_kind':estimator_kind,'state':'p,v,q,b_g,b_a' if hasattr(est,'position') else 'q,b_g','camera':{'width':cam.width,'height':cam.height,'fov_deg':cam.fov_deg,'render_width':cam.render_width,'render_height':cam.render_height,'feature_detector':'Harris','tracker':'2D patch + inertial-prior gating + parallax guard','constraint':'0.2 s cloned-pose relative attitude in Full INS; heading-only under parallax','clone_min_baseline_s':clone_min_dt},'range':{'rows':rngs.rows,'cols':rngs.cols,'tilt_down_deg':rngs.tilt_down_deg,'tracker':'local-plane temporal normal + ICP health check','constraint':'relative_tilt + normal_translation','translation_observability':'local_plane_normal_only','absolute_floor_prior':False},'scene':SCENE},'metrics':metrics,'records':records}
+ return {'meta':{'imu_hz':imu_hz,'camera_hz':camera_hz,'range_hz':range_hz,'estimator_kind':estimator_kind,'state':'p,v,q,b_g,b_a' if hasattr(est,'position') else 'q,b_g','camera':{'width':cam.width,'height':cam.height,'fov_deg':cam.fov_deg,'render_width':cam.render_width,'render_height':cam.render_height,'feature_detector':'Harris','tracker':'2D patch + inertial-prior gating + adaptive parallax guard','constraint':'Version-7 active relative attitude + cloned-pose bias shadow','clone_bias_mode':'shadow'},'range':{'rows':rngs.rows,'cols':rngs.cols,'tilt_down_deg':rngs.tilt_down_deg,'tracker':'local-plane temporal normal + ICP health check','constraint':'relative_tilt + normal_translation','translation_observability':'local_plane_normal_only','absolute_floor_prior':False},'scene':SCENE},'metrics':metrics,'records':records}
 
 def compare_modes(scenario='combined',duration=10.,seed=42,estimator_kind='ins_eskf'):
  modes={'imu_only':(False,False),'imu_camera':(True,False),'imu_range':(False,True),'all':(True,True)};return {name:run_simulation(scenario,duration,seed,c,r,estimator_kind=estimator_kind) for name,(c,r) in modes.items()}
