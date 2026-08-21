@@ -2,17 +2,15 @@ from __future__ import annotations
 import itertools
 import numpy as np
 from scipy.spatial.transform import Rotation
-from .visual_geometry import epipolar_relative_rotation
 
 
 def visual_relative_rotation(previous_frame,current_frame,camera,min_tracks=4,rotation_prior=None):
     """Estimate frame-to-frame camera rotation from matched image bearings.
 
-    Low-parallax frames use a direct rotation fit. When an inertial prior sees
-    substantial non-rotational image motion and at least five tracks are
-    available, an epipolar model marginalizes the unknown monocular translation
-    direction before estimating rotation. This prevents translational parallax
-    from being absorbed as false Roll/Pitch.
+    An inertial relative-rotation prior rejects tracks whose motion is
+    inconsistent with rigid rotation. A large residual to that prior is also
+    exposed as a parallax indicator so the ESKF can avoid treating translation-
+    contaminated Roll/Pitch as a trustworthy attitude observation.
     """
     if previous_frame is None or current_frame is None:return None
     prev={f.feature_id:f for f in previous_frame.features};pairs=[]
@@ -20,19 +18,10 @@ def visual_relative_rotation(previous_frame,current_frame,camera,min_tracks=4,ro
         p=prev.get(f.feature_id)
         if p is not None:pairs.append((camera.bearing_from_pixel(p.u,p.v),camera.bearing_from_pixel(f.u,f.v)))
     if len(pairs)<min_tracks:return None
-    all_prev=np.asarray([a for a,_ in pairs]);all_cur=np.asarray([b for _,b in pairs]);candidate_tracks=len(pairs)
-    prior_rms=float('nan');prior_kept=candidate_tracks;model='rotation_only';epi_rms=float('nan');prior_correction=float('nan')
-
+    prev_b=np.asarray([a for a,_ in pairs]);cur_b=np.asarray([b for _,b in pairs]);n=len(pairs);candidate_tracks=n
+    prior_rms=float('nan');prior_kept=n;weights=None;parallax=False
     if rotation_prior is not None:
-        prior_pred=np.asarray(rotation_prior.apply(all_cur));prior_err=np.arccos(np.clip(np.sum(prior_pred*all_prev,axis=1),-1,1));prior_rms=float(np.degrees(np.sqrt(np.mean(prior_err**2))))
-        if candidate_tracks>=5 and prior_rms>.22:
-            epi=epipolar_relative_rotation(all_prev,all_cur,rotation_prior)
-            if epi is not None and epi['success'] and epi['prior_correction_deg']<1.8 and epi['epipolar_rms_deg']<.35:
-                return {"rotation":epi['rotation'],"tracks":int(candidate_tracks),"candidate_tracks":int(candidate_tracks),"track_rms_deg":float(max(epi['epipolar_rms_deg'],.05)),"prior_used":True,"prior_kept_tracks":int(candidate_tracks),"prior_residual_rms_deg":prior_rms,"visual_model":"epipolar","epipolar_rms_deg":float(epi['epipolar_rms_deg']),"prior_correction_deg":float(epi['prior_correction_deg']),"translation_direction_previous":epi['translation_direction_previous'].tolist()}
-
-    prev_b=all_prev;cur_b=all_cur;n=candidate_tracks;weights=None
-    if rotation_prior is not None:
-        pred=np.asarray(rotation_prior.apply(cur_b));pe=np.arccos(np.clip(np.sum(pred*prev_b,axis=1),-1,1))
+        pred=np.asarray(rotation_prior.apply(cur_b));pe=np.arccos(np.clip(np.sum(pred*prev_b,axis=1),-1,1));prior_rms=float(np.degrees(np.sqrt(np.mean(pe**2))));parallax=bool(candidate_tracks>=5 and prior_rms>.22)
         order=np.argsort(pe);keep_n=max(min_tracks,int(np.ceil(n*.60)));gate=min(np.radians(1.2),max(np.radians(.30),float(np.percentile(pe,65))))
         ids=np.where(pe<=gate)[0]
         if len(ids)<keep_n:ids=order[:keep_n]
@@ -56,7 +45,7 @@ def visual_relative_rotation(previous_frame,current_frame,camera,min_tracks=4,ro
         pred=rot.apply(cur_b);err=np.arccos(np.clip(np.sum(pred*prev_b,axis=1),-1,1));best_in=np.argsort(err)[:max(min_tracks,int(np.ceil(n*.6)))]
     w=None if weights is None else weights[best_in]
     rot,_=Rotation.align_vectors(prev_b[best_in],cur_b[best_in],weights=w);pred=rot.apply(cur_b[best_in]);err=np.arccos(np.clip(np.sum(pred*prev_b[best_in],axis=1),-1,1));rms=float(np.degrees(np.sqrt(np.mean(err**2))))
-    return {"rotation":rot,"tracks":int(len(best_in)),"candidate_tracks":int(candidate_tracks),"track_rms_deg":rms,"prior_used":bool(rotation_prior is not None),"prior_kept_tracks":int(prior_kept),"prior_residual_rms_deg":prior_rms,"visual_model":model,"epipolar_rms_deg":epi_rms,"prior_correction_deg":prior_correction}
+    return {"rotation":rot,"tracks":int(len(best_in)),"candidate_tracks":int(candidate_tracks),"track_rms_deg":rms,"prior_used":bool(rotation_prior is not None),"prior_kept_tracks":int(prior_kept),"prior_residual_rms_deg":prior_rms,"parallax_detected":parallax,"visual_model":"rotation_with_parallax_guard"}
 
 
 def _range_points(frame):
@@ -108,37 +97,28 @@ def _range_icp_diagnostics(prev,cur,min_pairs=8,max_pair_distance=.28):
 
 
 def range_relative_rotation(previous_frame,current_frame,min_pairs=8):
-    """Estimate only the Range-observable relative tilt between frames."""
     if previous_frame is None or current_frame is None:return None
     p0=_local_range_plane(previous_frame);p1=_local_range_plane(current_frame)
     if p0 is None or p1 is None:return None
-    rot=_minimal_rotation(p1["normal"],p0["normal"])
-    prev=_range_points(previous_frame);cur=_range_points(current_frame);diag=_range_icp_diagnostics(prev,cur,min_pairs=min_pairs)
+    rot=_minimal_rotation(p1["normal"],p0["normal"]);prev=_range_points(previous_frame);cur=_range_points(current_frame);diag=_range_icp_diagnostics(prev,cur,min_pairs=min_pairs)
     if diag is None:return None
     plane_rms=max(p0["plane_rms_m"],p1["plane_rms_m"])
     return {"rotation":rot,"previous_normal":p0["normal"].copy(),"current_normal":p1["normal"].copy(),"pairs":diag["pairs"],"range_rms_m":max(diag["range_rms_m"],plane_rms),"translation_m":diag["translation_m"],"prev_points":int(len(prev)),"current_points":int(len(cur)),"observable":"tilt_only","plane_rms_m":float(plane_rms)}
 
 
 def range_normal_translation(previous_frame,current_frame,relative_rotation):
-    """Measure only the translation component observable along a local plane normal."""
     if previous_frame is None or current_frame is None or relative_rotation is None:return None
     p0=_local_range_plane(previous_frame);p1=_local_range_plane(current_frame)
     if p0 is None or p1 is None:return None
     n0=p0["normal"]/np.linalg.norm(p0["normal"]);n1r=relative_rotation.apply(p1["normal"]);n1r/=np.linalg.norm(n1r)
     if float(np.dot(n0,n1r))<0:n1r=-n1r
-    normal_angle=float(np.degrees(np.arccos(np.clip(np.dot(n0,n1r),-1,1))))
-    n=n0+n1r;nn=np.linalg.norm(n)
+    normal_angle=float(np.degrees(np.arccos(np.clip(np.dot(n0,n1r),-1,1))));n=n0+n1r;nn=np.linalg.norm(n)
     if nn<1e-8:return None
-    n/=nn
-    c1r=relative_rotation.apply(p1["center"])
-    displacement=float(np.dot(n,p0["center"]-c1r))
-    plane_rms=max(float(p0["plane_rms_m"]),float(p1["plane_rms_m"]))
-    quality=float(np.clip((1.0-normal_angle/8.0)*(1.0-plane_rms/.05),0.0,1.0))
+    n/=nn;c1r=relative_rotation.apply(p1["center"]);displacement=float(np.dot(n,p0["center"]-c1r));plane_rms=max(float(p0["plane_rms_m"]),float(p1["plane_rms_m"]));quality=float(np.clip((1.0-normal_angle/8.0)*(1.0-plane_rms/.05),0.0,1.0))
     if normal_angle>12.0 or plane_rms>.08:return None
     return {"normal_previous":n.copy(),"displacement_m":displacement,"normal_angle_deg":normal_angle,"plane_rms_m":plane_rms,"quality":quality,"observable":"normal_translation_only"}
 
 
 def range_floor_normal(frame,local_fraction=.45):
-    """Legacy/debug helper. Not used by the active estimator path."""
     p=_local_range_plane(frame,local_fraction)
     return None if p is None else p["normal"]
