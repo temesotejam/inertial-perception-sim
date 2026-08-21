@@ -53,3 +53,12 @@ def test_correlated_camera_relative_update_injects_attitude_only():
     assert np.allclose(f.gyro_bias,bg,atol=1e-12)
     assert np.allclose(f.accel_bias,ba,atol=1e-12)
     assert f.last_event['camera_state_coupling']=='attitude_only'
+
+
+def test_parallax_guard_rejects_camera_tilt_but_keeps_heading_component():
+    f=InertialESKF(initial_orientation=Rotation.identity())
+    f.update_camera_relative(Rotation.from_euler('xyz',[2.0,-1.5,1.0],degrees=True),Rotation.identity(),tracks=10,track_rms_deg=.15,parallax_detected=True)
+    e=f.orientation.as_euler('xyz',degrees=True)
+    assert abs(e[0])<.05 and abs(e[1])<.05
+    assert abs(e[2])>.05
+    assert f.last_event['camera_state_coupling']=='attitude_only_yaw_under_parallax'
