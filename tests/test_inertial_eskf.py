@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.spatial.transform import Rotation
 from inertial_perception.inertial_eskf import InertialESKF,G_WORLD
 from inertial_perception.types import ImuSample
 from inertial_perception.world import truth_at
@@ -40,3 +41,37 @@ def test_external_attitude_constraints_do_not_directly_reset_position():
     out=run_simulation('translation',1.5,8,True,True,estimator_kind='ins_eskf')
     assert out['meta']['state']=='p,v,q,b_g,b_a'
     assert np.isfinite(out['metrics']['final_position_error_m'])
+
+
+def test_correlated_camera_relative_update_injects_attitude_only():
+    gt0=truth_at(0.,'translation');f=InertialESKF(gt0.position,gt0.velocity,gt0.orientation)
+    for t in np.arange(0.,.5,.005):f.propagate(ideal_imu(truth_at(float(t),'translation')))
+    p=f.position.copy();v=f.velocity.copy();bg=f.gyro_bias.copy();ba=f.accel_bias.copy();q=f.orientation
+    f.update_camera_relative(Rotation.from_euler('xyz',[.3,-.2,.4],degrees=True),q,tracks=10,track_rms_deg=.15)
+    assert np.allclose(f.position,p,atol=1e-12)
+    assert np.allclose(f.velocity,v,atol=1e-12)
+    assert np.allclose(f.gyro_bias,bg,atol=1e-12)
+    assert np.allclose(f.accel_bias,ba,atol=1e-12)
+    assert f.last_event['camera_state_coupling']=='attitude_only'
+
+
+def test_parallax_guard_rejects_camera_tilt_but_keeps_heading_component():
+    f=InertialESKF(initial_orientation=Rotation.identity())
+    f.update_camera_relative(Rotation.from_euler('xyz',[2.0,-1.5,1.0],degrees=True),Rotation.identity(),tracks=10,track_rms_deg=.15,parallax_detected=True)
+    e=f.orientation.as_euler('xyz',degrees=True)
+    assert abs(e[0])<.05 and abs(e[1])<.05
+    assert abs(e[2])>.05
+    assert f.last_event['camera_state_coupling']=='attitude_only_yaw_under_parallax'
+
+
+def test_correlated_range_relative_update_injects_attitude_only():
+    gt0=truth_at(0.,'translation');f=InertialESKF(gt0.position,gt0.velocity,gt0.orientation)
+    for t in np.arange(0.,.5,.005):f.propagate(ideal_imu(truth_at(float(t),'translation')))
+    p=f.position.copy();v=f.velocity.copy();bg=f.gyro_bias.copy();ba=f.accel_bias.copy();q=f.orientation
+    n0=np.array([0.,0.,1.]);n1=Rotation.from_euler('x',2,degrees=True).inv().apply(n0)
+    f.update_range_relative(n0,n1,q,pairs=20,range_rms_m=.01,translation_m=.01,range_rotation_deg=2.)
+    assert np.allclose(f.position,p,atol=1e-12)
+    assert np.allclose(f.velocity,v,atol=1e-12)
+    assert np.allclose(f.gyro_bias,bg,atol=1e-12)
+    assert np.allclose(f.accel_bias,ba,atol=1e-12)
+    assert f.last_event['range_state_coupling']=='attitude_only'
