@@ -8,20 +8,20 @@
 </style>
 </head>
 <body>
-<header><h1>Inertial Perception Simulator — Relative Camera + Relative Range</h1><p>CameraもRangeも世界座標の絶対基準を使わず、連続フレーム間の相対回転としてIMUを補正します。</p></header>
+<header><h1>Inertial Perception Simulator — Full INS + Relative Perception</h1><p>15-state INS ESKFをIMUで伝播し、Cameraは相対回転、Rangeは相対Tiltと観測可能な法線方向並進でドリフトを補正します。</p></header>
 <div class="wrap">
-<p class="scene-note">Cameraは画像特徴追跡、Rangeは8×8点群のICPから相対回転を作ります。Rangeは「床が水平」と仮定しません。平坦面だけではYawが観測しにくいなど、実際の幾何学的な可観測性の限界もそのまま残します。</p>
+<p class="scene-note">Range translationは3D移動を無条件に観測したことにはしません。局所面しか見えていない場合は、その面の法線方向だけをメートル尺度の位置拘束として使います。床面なら主に高さ方向が観測され、床に沿うXY移動は未観測のまま残ります。</p>
 <div class="controls"><strong>Fusion:</strong><button data-mode="imu_only">IMU only</button><button data-mode="imu_camera">IMU + Camera</button><button data-mode="imu_range">IMU + Range</button><button data-mode="all" class="active">All sensors</button><span class="spacer"></span><label class="toggle"><input id="denseOverlayToggle" type="checkbox"> Dense overlay on camera</label><button id="prev">◀ 1 step</button><button id="play">▶ Play</button><button id="next">1 step ▶</button><label>Speed <select id="speed"><option>.25</option><option>.5</option><option selected>1</option><option>2</option><option>5</option></select>×</label><span id="status" class="status"></span></div>
 <section class="card" style="margin-bottom:14px"><h2>Fault Injection / Sensitivity Controls</h2><div class="faults"><div class="fault"><label>Gyro bias <span id="vBias">0.00 °/s</span></label><input id="gyroBias" type="range" min="-1" max="1" step="0.01" value="0"></div><div class="fault"><label>Gyro noise <span id="vNoise">0.00 °</span></label><input id="gyroNoise" type="range" min="0" max="2" step="0.02" value="0"></div><div class="fault"><label>Camera dropout <span id="vCamDrop">0%</span></label><input id="camDrop" type="range" min="0" max="100" step="1" value="0"></div><div class="fault"><label>Range dropout <span id="vRangeDrop">0%</span></label><input id="rangeDrop" type="range" min="0" max="100" step="1" value="0"></div><div class="fault"><label>Camera timestamp delay <span id="vCamDelay">0 ms</span></label><input id="camDelay" type="range" min="0" max="300" step="5" value="0"></div><div class="fault"><label>Range timestamp delay <span id="vRangeDelay">0 ms</span></label><input id="rangeDelay" type="range" min="0" max="300" step="5" value="0"></div></div><p class="explain"><span class="warn">注:</span> 故障注入は可視化実験レイヤです。Estimator性能の正式評価はPython/GitHub Actionsを基準にします。</p></section>
 <div class="grid">
 <section class="card"><h2>3D World — terrain / colored geometry / range points</h2><canvas id="world" class="canvas"></canvas></section>
-<section class="card"><h2>Current State + Relative Constraints</h2><div id="state" class="state"></div><div id="event" class="event"></div><p class="explain">CameraとRangeはそれぞれ前回観測からのΔRを推定し、同じ区間のIMU積分との差をResidualとして補正します。</p></section>
+<section class="card"><h2>Current INS State + Relative Constraints</h2><div id="state" class="state"></div><div id="event" class="event"></div><p class="explain">Cameraは相対3D回転、Rangeは相対Tiltと局所面法線方向の相対変位をESKFへ渡します。未観測方向は拘束しません。</p></section>
 <section class="card"><h2>Synthetic Camera + Tracked Harris Features + Sparse RGB-D</h2><canvas id="camera" class="canvas smallcanvas"></canvas></section>
 <section class="card"><h2>Dense Depth — edge-aware interpolation</h2><canvas id="denseDepth" class="canvas smallcanvas"></canvas></section>
 <section class="card"><h2>Dense Depth Error vs Ground Truth</h2><canvas id="depthError" class="canvas smallcanvas"></canvas><p id="depthMetrics" class="eval-note">Depth evaluation loading…</p></section>
-<section class="card"><h2>Raw Grid Range — 8 × 8 + Relative ICP</h2><div id="depth" class="depth"></div></section>
+<section class="card"><h2>Raw Grid Range — 8 × 8 + Relative Constraints</h2><div id="depth" class="depth"></div></section>
 <section class="card"><h2>Event Trace — predict / observe / correct</h2><div id="trace" class="trace"></div></section>
-<section class="card"><h2>How to read the relative frontends</h2><p class="explain">Visualはtrack数とtrack RMS、RangeはICP pair数とRMSを品質指標に使います。品質が悪い観測はgainを自動的に下げます。Range translationは点群整合の健全性チェックで、姿勢Estimatorには回転だけを使用します。</p><button id="resetFaults">Reset faults</button></section>
+<section class="card"><h2>How to read the relative frontends</h2><p class="explain">Visualはtrack数とtrack RMS、Range Tiltは局所面法線、Range translationは前後フレームの平面offset差を使います。Rangeの並進観測は法線方向1自由度だけなので、平面に沿う移動を勝手に補正しません。</p><button id="resetFaults">Reset faults</button></section>
 <section class="card" style="grid-column:1/-1"><h2>Orientation Error Timeline</h2><canvas id="chart" class="canvas smallcanvas"></canvas><div id="metrics" class="legend"></div></section>
 </div></div>
 <script src="experiments.js"></script><script src="app.js"></script><script src="dense_depth.js"></script><script src="depth_eval.js"></script><script src="stabilization.js"></script><script src="visual_frontend.js"></script><script src="range_frontend.js"></script>
