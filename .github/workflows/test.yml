@@ -24,4 +24,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: version6-range-translation-demo-data
-          path: web/data/demo.json
+          path: |
+            web/data/demo.json
+            web/data/translation_eval.json
