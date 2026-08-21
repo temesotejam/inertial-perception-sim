@@ -88,7 +88,32 @@ def range_relative_rotation(previous_frame,current_frame,min_pairs=8):
     return {"rotation":rot,"previous_normal":p0["normal"].copy(),"current_normal":p1["normal"].copy(),"pairs":diag["pairs"],"range_rms_m":max(diag["range_rms_m"],plane_rms),"translation_m":diag["translation_m"],"prev_points":int(len(prev)),"current_points":int(len(cur)),"observable":"tilt_only","plane_rms_m":float(plane_rms)}
 
 
+def range_normal_translation(previous_frame,current_frame,relative_rotation):
+    """Measure only the translation component observable along a local plane normal.
+
+    The current local plane is rotated into the previous sensor frame using an
+    external attitude prior (IMU/Camera estimate). The difference in plane
+    offset gives one metric displacement scalar along the previous plane normal.
+    Tangential translation is deliberately left unobserved on a near-planar view.
+    """
+    if previous_frame is None or current_frame is None or relative_rotation is None:return None
+    p0=_local_range_plane(previous_frame);p1=_local_range_plane(current_frame)
+    if p0 is None or p1 is None:return None
+    n0=p0["normal"]/np.linalg.norm(p0["normal"]);n1r=relative_rotation.apply(p1["normal"]);n1r/=np.linalg.norm(n1r)
+    if float(np.dot(n0,n1r))<0:n1r=-n1r
+    normal_angle=float(np.degrees(np.arccos(np.clip(np.dot(n0,n1r),-1,1))))
+    n=n0+n1r;nn=np.linalg.norm(n)
+    if nn<1e-8:return None
+    n/=nn
+    c1r=relative_rotation.apply(p1["center"])
+    displacement=float(np.dot(n,p0["center"]-c1r))
+    plane_rms=max(float(p0["plane_rms_m"]),float(p1["plane_rms_m"]))
+    quality=float(np.clip((1.0-normal_angle/8.0)*(1.0-plane_rms/.05),0.0,1.0))
+    if normal_angle>12.0 or plane_rms>.08:return None
+    return {"normal_previous":n.copy(),"displacement_m":displacement,"normal_angle_deg":normal_angle,"plane_rms_m":plane_rms,"quality":quality,"observable":"normal_translation_only"}
+
+
 def range_floor_normal(frame,local_fraction=.45):
-    """Legacy/debug helper. Not used by the Version 3 estimator path."""
+    """Legacy/debug helper. Not used by the active estimator path."""
     p=_local_range_plane(frame,local_fraction)
     return None if p is None else p["normal"]

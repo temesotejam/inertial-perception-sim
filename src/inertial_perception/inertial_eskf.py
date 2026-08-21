@@ -14,28 +14,31 @@ class InertialESKF:
 
     Nominal state: p, v, q, b_g, b_a.
     Error state: [dp, dv, dtheta, db_g, db_a].
-    Camera/Range still constrain attitude only in Version 5. Position and
-    velocity are propagated from IMU and deliberately left uncorrected until a
-    later translational frontend is added.
+    Camera constrains relative attitude. Range constrains relative tilt and,
+    when a local plane is observable, displacement only along that plane normal.
     """
     def __init__(self,initial_position=None,initial_velocity=None,initial_orientation=None,
                  gyro_noise_std=.0015,accel_noise_std=.025,bias_rw_std=2.5e-4,
                  accel_bias_rw_std=2.0e-3,accel_gravity_noise_deg=3.0,
-                 camera_noise_deg=.75,range_noise_deg=1.8,gravity_update=False):
+                 camera_noise_deg=.75,range_noise_deg=1.8,range_translation_noise_m=.025,gravity_update=False):
         self.position=np.zeros(3) if initial_position is None else np.asarray(initial_position,float).copy()
         self.velocity=np.zeros(3) if initial_velocity is None else np.asarray(initial_velocity,float).copy()
         self.orientation=initial_orientation or Rotation.identity();self.gyro_bias=np.zeros(3);self.accel_bias=np.zeros(3);self.last_t=None
         sig=np.array([.05,.05,.05,.10,.10,.10,*np.radians([2.,2.,4.]),*np.radians([.35,.35,.6]),.08,.08,.08]);self.P=np.diag(sig**2)
         self.gyro_noise_std=float(gyro_noise_std);self.accel_noise_std=float(accel_noise_std);self.bias_rw_std=float(bias_rw_std);self.accel_bias_rw_std=float(accel_bias_rw_std)
-        self.accel_gravity_noise=np.radians(accel_gravity_noise_deg);self.camera_noise=np.radians(camera_noise_deg);self.range_noise=np.radians(range_noise_deg);self.gravity_update=bool(gravity_update)
+        self.accel_gravity_noise=np.radians(accel_gravity_noise_deg);self.camera_noise=np.radians(camera_noise_deg);self.range_noise=np.radians(range_noise_deg);self.range_translation_noise_m=float(range_translation_noise_m);self.gravity_update=bool(gravity_update)
         self.last_event={"kind":"init","residual_deg":0.,"correction_deg":0.,"filter":"ins_eskf"}
 
     def _inject(self,dx):
         self.position+=dx[:3];self.velocity+=dx[3:6];self.orientation=Rotation.from_rotvec(dx[6:9])*self.orientation;self.gyro_bias+=dx[9:12];self.accel_bias+=dx[12:15]
 
+    def _kalman(self,residual,H,R_cov):
+        residual=np.atleast_1d(np.asarray(residual,float));S=H@self.P@H.T+R_cov;K=self.P@H.T@np.linalg.inv(S);dx=K@residual
+        I=np.eye(15);A=I-K@H;self.P=A@self.P@A.T+K@R_cov@K.T;self.P=(self.P+self.P.T)*.5
+        return dx
+
     def _update(self,residual,H,R_cov,kind,extra=None):
-        residual=np.asarray(residual,float);S=H@self.P@H.T+R_cov;K=self.P@H.T@np.linalg.inv(S);dx=K@residual;before=self.orientation;self._inject(dx)
-        I=np.eye(15);A=I-K@H;self.P=A@self.P@A.T+K@R_cov@K.T;self.P=(self.P+self.P.T)*.5;correction=(self.orientation*before.inv()).magnitude()
+        residual=np.asarray(residual,float);before=self.orientation;dx=self._kalman(residual,H,R_cov);self._inject(dx);correction=(self.orientation*before.inv()).magnitude()
         ev={"kind":kind,"residual_deg":float(np.degrees(np.linalg.norm(residual))),"correction_deg":float(np.degrees(correction)),"filter":"ins_eskf","bias_norm_dps":float(np.degrees(np.linalg.norm(self.gyro_bias))),"accel_bias_norm":float(np.linalg.norm(self.accel_bias)),"sigma_att_deg":float(np.degrees(np.sqrt(np.mean(np.diag(self.P)[6:9])))),"sigma_pos_m":float(np.sqrt(np.mean(np.diag(self.P)[:3]))),"sigma_vel_mps":float(np.sqrt(np.mean(np.diag(self.P)[3:6])))}
         if extra:ev.update(extra)
         self.last_event=ev
@@ -62,5 +65,15 @@ class InertialESKF:
     def update_range_relative(self,previous_normal,current_normal,reference_orientation,pairs=0,range_rms_m=float('nan'),translation_m=float('nan'),range_rotation_deg=float('nan')):
         desired_world=reference_orientation.apply(np.asarray(previous_normal,float));current_world=self.orientation.apply(np.asarray(current_normal,float));corr=align_vector_correction(current_world,desired_world);residual=corr.as_rotvec();count_quality=max(.05,min(1.,(pairs-7)/16.));rms_quality=max(.05,min(1.,1.-range_rms_m/.12)) if np.isfinite(range_rms_m) else .05;translation_quality=max(.05,min(1.,1.-translation_m/.22)) if np.isfinite(translation_m) else .05;quality=count_quality*rms_quality*translation_quality;sigma=self.range_noise/max(np.sqrt(quality),.18);n=current_world/np.linalg.norm(current_world);H=np.zeros((3,15));H[:,6:9]=np.eye(3)-np.outer(n,n);imu_delta=reference_orientation.inv()*self.orientation
         extra={"pairs":int(pairs),"range_rms_m":float(range_rms_m),"range_translation_m":float(translation_m),"range_rotation_deg":float(range_rotation_deg),"imu_rotation_deg":float(np.degrees(imu_delta.magnitude())),"range_quality":float(quality),"measurement_sigma_deg":float(np.degrees(sigma))};self._update(residual,H,np.eye(3)*sigma**2,"range_relative",extra)
+
+    def update_range_translation(self,normal_previous,displacement_m,reference_position,reference_orientation,quality=1.0,plane_rms_m=float('nan'),normal_angle_deg=float('nan')):
+        """Fuse the one Range-observable displacement component along a local plane normal."""
+        n_prev=np.asarray(normal_previous,float);n_prev/=np.linalg.norm(n_prev);n_world=reference_orientation.apply(n_prev);n_world/=np.linalg.norm(n_world)
+        predicted=float(np.dot(n_world,self.position-np.asarray(reference_position,float)));residual=float(displacement_m-predicted)
+        q=float(np.clip(quality,.02,1.0));sigma=self.range_translation_noise_m/max(np.sqrt(q),.18)
+        H=np.zeros((1,15));H[0,:3]=n_world;before_p=self.position.copy();before_v=self.velocity.copy();before_q=self.orientation
+        dx=self._kalman(np.array([residual]),H,np.array([[sigma**2]],float));self._inject(dx)
+        correction_deg=float(np.degrees((self.orientation*before_q.inv()).magnitude()))
+        self.last_event={"kind":"range_translation","residual_deg":0.,"correction_deg":correction_deg,"filter":"ins_eskf","range_translation_residual_m":residual,"range_translation_observed_m":float(displacement_m),"range_translation_predicted_m":predicted,"range_translation_sigma_m":float(sigma),"range_translation_quality":q,"range_translation_plane_rms_m":float(plane_rms_m),"range_translation_normal_angle_deg":float(normal_angle_deg),"position_correction_m":float(np.linalg.norm(self.position-before_p)),"velocity_correction_mps":float(np.linalg.norm(self.velocity-before_v)),"accel_bias_norm":float(np.linalg.norm(self.accel_bias)),"sigma_pos_m":float(np.sqrt(np.mean(np.diag(self.P)[:3]))),"sigma_vel_mps":float(np.sqrt(np.mean(np.diag(self.P)[3:6])))}
 
     def state(self,t):return State(t,self.orientation,self.gyro_bias.copy(),self.position.copy(),self.velocity.copy(),self.accel_bias.copy())

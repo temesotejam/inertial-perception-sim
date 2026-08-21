@@ -1,4 +1,4 @@
-name: Version 5 full inertial ESKF tests
+name: Version 6 Range translation tests
 on:
   push:
   pull_request:
@@ -23,5 +23,7 @@ jobs:
       - run: python scripts/export_demo.py
       - uses: actions/upload-artifact@v4
         with:
-          name: version5-full-ins-demo-data
-          path: web/data/demo.json
+          name: version6-range-translation-demo-data
+          path: |
+            web/data/demo.json
+            web/data/translation_eval.json
