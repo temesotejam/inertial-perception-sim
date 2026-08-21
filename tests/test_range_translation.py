@@ -4,6 +4,7 @@ from inertial_perception.world import truth_at
 from inertial_perception.sensors import GridRangeSimulator
 from inertial_perception.frontend import range_normal_translation
 from inertial_perception.inertial_eskf import InertialESKF
+from inertial_perception.simulation import run_simulation
 
 
 def test_range_plane_offset_recovers_normal_displacement():
@@ -37,3 +38,10 @@ def test_range_translation_reduces_position_uncertainty_along_observed_axis():
     f.update_range_translation(np.array([0.,0.,1.]),0.,np.array([0.,0.,1.]),Rotation.identity(),quality=1.0)
     assert f.P[2,2] < before
     assert np.isfinite(f.P).all()
+
+
+def test_range_translation_reduces_vertical_position_drift_in_translation_scenario():
+    imu=run_simulation('translation',4.,21,False,False,estimator_kind='ins_eskf')['metrics']
+    rng=run_simulation('translation',4.,21,False,True,estimator_kind='ins_eskf')['metrics']
+    assert rng['vertical_position_rmse_m'] < imu['vertical_position_rmse_m']
+    assert np.isfinite(rng['final_vertical_position_error_m'])
