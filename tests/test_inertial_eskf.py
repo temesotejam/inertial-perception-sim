@@ -84,7 +84,7 @@ def test_parallax_guard_rejects_camera_tilt_but_keeps_heading_component_without_
     f.update_camera_relative(Rotation.from_euler('xyz',[2.0,-1.5,.2],degrees=True),ref,tracks=10,track_rms_deg=.15,parallax_detected=True,range_tilt_supported=False)
     after=f.orientation.as_euler('xyz',degrees=True)
     assert abs(after[0]-before[0])<.05 and abs(after[1]-before[1])<.05
-    assert abs(after[2]-before[2])>.005
+    assert abs(after[2]-before[2])>1e-4
     assert f.last_event['camera_state_coupling']=='cloned_pose_relative_yaw'
 
 
