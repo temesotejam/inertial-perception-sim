@@ -4,28 +4,49 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 
-def visual_relative_rotation(previous_frame,current_frame,camera,min_tracks=4):
-    """Estimate frame-to-frame camera rotation from matched image bearings only."""
+def visual_relative_rotation(previous_frame,current_frame,camera,min_tracks=4,rotation_prior=None):
+    """Estimate frame-to-frame camera rotation from matched image bearings.
+
+    When an inertial relative-rotation prior is available it is used only to
+    reject/weight tracks whose motion is inconsistent with rigid rotation.
+    This prevents translational parallax from being absorbed as false camera
+    attitude while keeping the final visual constraint image-derived.
+    """
     if previous_frame is None or current_frame is None:return None
     prev={f.feature_id:f for f in previous_frame.features};pairs=[]
     for f in current_frame.features:
         p=prev.get(f.feature_id)
         if p is not None:pairs.append((camera.bearing_from_pixel(p.u,p.v),camera.bearing_from_pixel(f.u,f.v)))
     if len(pairs)<min_tracks:return None
-    prev_b=np.asarray([a for a,_ in pairs]);cur_b=np.asarray([b for _,b in pairs]);n=len(pairs)
+    prev_b=np.asarray([a for a,_ in pairs]);cur_b=np.asarray([b for _,b in pairs]);n=len(pairs);candidate_tracks=n
+    prior_rms=float('nan');prior_kept=n;weights=None
+    if rotation_prior is not None:
+        pred=np.asarray(rotation_prior.apply(cur_b));pe=np.arccos(np.clip(np.sum(pred*prev_b,axis=1),-1,1));prior_rms=float(np.degrees(np.sqrt(np.mean(pe**2))))
+        order=np.argsort(pe);keep_n=max(min_tracks,int(np.ceil(n*.60)));gate=min(np.radians(1.2),max(np.radians(.30),float(np.percentile(pe,65))))
+        ids=np.where(pe<=gate)[0]
+        if len(ids)<keep_n:ids=order[:keep_n]
+        elif len(ids)>keep_n:ids=ids[np.argsort(pe[ids])[:keep_n]]
+        prev_b=prev_b[ids];cur_b=cur_b[ids];pe=pe[ids];n=len(ids);prior_kept=n
+        floor=np.radians(.08);weights=1.0/np.maximum(pe,floor)**2;weights=weights/np.mean(weights)
     best=None;best_in=None;thr=np.radians(.65)
     combos=list(itertools.combinations(range(n),3))[:160]
     for ids in combos:
-        try:rot,_=Rotation.align_vectors(prev_b[list(ids)],cur_b[list(ids)])
+        try:
+            w=None if weights is None else weights[list(ids)]
+            rot,_=Rotation.align_vectors(prev_b[list(ids)],cur_b[list(ids)],weights=w)
         except Exception:continue
         pred=rot.apply(cur_b);err=np.arccos(np.clip(np.sum(pred*prev_b,axis=1),-1,1));inn=np.where(err<thr)[0]
         if len(inn)<min_tracks:continue
         score=(len(inn),-float(np.mean(err[inn])))
         if best is None or score>best:best=score;best_in=inn
     if best_in is None:
-        rot,_=Rotation.align_vectors(prev_b,cur_b);pred=rot.apply(cur_b);err=np.arccos(np.clip(np.sum(pred*prev_b,axis=1),-1,1));best_in=np.argsort(err)[:max(min_tracks,int(np.ceil(n*.6)))]
-    rot,_=Rotation.align_vectors(prev_b[best_in],cur_b[best_in]);pred=rot.apply(cur_b[best_in]);err=np.arccos(np.clip(np.sum(pred*prev_b[best_in],axis=1),-1,1));rms=float(np.degrees(np.sqrt(np.mean(err**2))))
-    return {"rotation":rot,"tracks":int(len(best_in)),"candidate_tracks":int(n),"track_rms_deg":rms}
+        try:
+            rot,_=Rotation.align_vectors(prev_b,cur_b,weights=weights)
+        except Exception:return None
+        pred=rot.apply(cur_b);err=np.arccos(np.clip(np.sum(pred*prev_b,axis=1),-1,1));best_in=np.argsort(err)[:max(min_tracks,int(np.ceil(n*.6)))]
+    w=None if weights is None else weights[best_in]
+    rot,_=Rotation.align_vectors(prev_b[best_in],cur_b[best_in],weights=w);pred=rot.apply(cur_b[best_in]);err=np.arccos(np.clip(np.sum(pred*prev_b[best_in],axis=1),-1,1));rms=float(np.degrees(np.sqrt(np.mean(err**2))))
+    return {"rotation":rot,"tracks":int(len(best_in)),"candidate_tracks":int(candidate_tracks),"track_rms_deg":rms,"prior_used":bool(rotation_prior is not None),"prior_kept_tracks":int(prior_kept),"prior_residual_rms_deg":prior_rms}
 
 
 def _range_points(frame):
@@ -89,13 +110,7 @@ def range_relative_rotation(previous_frame,current_frame,min_pairs=8):
 
 
 def range_normal_translation(previous_frame,current_frame,relative_rotation):
-    """Measure only the translation component observable along a local plane normal.
-
-    The current local plane is rotated into the previous sensor frame using an
-    external attitude prior (IMU/Camera estimate). The difference in plane
-    offset gives one metric displacement scalar along the previous plane normal.
-    Tangential translation is deliberately left unobserved on a near-planar view.
-    """
+    """Measure only the translation component observable along a local plane normal."""
     if previous_frame is None or current_frame is None or relative_rotation is None:return None
     p0=_local_range_plane(previous_frame);p1=_local_range_plane(current_frame)
     if p0 is None or p1 is None:return None
