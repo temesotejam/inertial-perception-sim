@@ -1,4 +1,4 @@
-name: Version 6 Range translation tests
+name: Version 7 camera translation stability tests
 on:
   push:
   pull_request:
@@ -21,9 +21,11 @@ jobs:
       - run: node --check web/visual_frontend.js
       - run: node --check web/range_frontend.js
       - run: python scripts/export_demo.py
+      - run: python scripts/evaluate_camera_translation.py
       - uses: actions/upload-artifact@v4
         with:
-          name: version6-range-translation-demo-data
+          name: version7-camera-translation-data
           path: |
             web/data/demo.json
             web/data/translation_eval.json
+            web/data/camera_translation_eval.json
