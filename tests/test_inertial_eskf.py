@@ -78,11 +78,13 @@ def test_cloned_camera_relative_update_can_correct_gyro_bias():
 
 
 def test_parallax_guard_rejects_camera_tilt_but_keeps_heading_component_without_range_support():
-    f=InertialESKF(initial_orientation=Rotation.identity());f.set_camera_clone();ref=f.camera_clone_orientation
-    f.update_camera_relative(Rotation.from_euler('xyz',[2.0,-1.5,1.0],degrees=True),ref,tracks=10,track_rms_deg=.15,parallax_detected=True,range_tilt_supported=False)
-    e=f.orientation.as_euler('xyz',degrees=True)
-    assert abs(e[0])<.05 and abs(e[1])<.05
-    assert abs(e[2])>.05
+    f=InertialESKF(initial_orientation=Rotation.identity());f.propagate(ImuSample(0.,np.zeros(3),np.array([0.,0.,9.80665])));f.set_camera_clone();ref=f.camera_clone_orientation
+    for k in range(1,21):f.propagate(ImuSample(k*.005,np.radians([0.,0.,.6]),np.array([0.,0.,9.80665])))
+    before=f.orientation.as_euler('xyz',degrees=True).copy()
+    f.update_camera_relative(Rotation.from_euler('xyz',[2.0,-1.5,.2],degrees=True),ref,tracks=10,track_rms_deg=.15,parallax_detected=True,range_tilt_supported=False)
+    after=f.orientation.as_euler('xyz',degrees=True)
+    assert abs(after[0]-before[0])<.05 and abs(after[1]-before[1])<.05
+    assert abs(after[2]-before[2])>.005
     assert f.last_event['camera_state_coupling']=='cloned_pose_relative_yaw'
 
 
