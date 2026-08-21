@@ -6,11 +6,11 @@ from .world import ray_scene_distance
 from .camera_render import render_camera, detect_harris_features
 
 class ImuSimulator:
-    def __init__(self,rng,gyro_bias=(.002,-.0015,.006),gyro_noise_std=.0015,accel_noise_std=.025):
-        self.rng=rng; self.bias=np.asarray(gyro_bias,float); self.gyro_noise_std=gyro_noise_std; self.accel_noise_std=accel_noise_std
+    def __init__(self,rng,gyro_bias=(.002,-.0015,.006),accel_bias=(.012,-.009,.018),gyro_noise_std=.0015,accel_noise_std=.025):
+        self.rng=rng; self.bias=np.asarray(gyro_bias,float); self.accel_bias=np.asarray(accel_bias,float); self.gyro_noise_std=gyro_noise_std; self.accel_noise_std=accel_noise_std
     def sample(self,gt:GroundTruthState):
         gyro=gt.angular_velocity+self.bias+self.rng.normal(0,self.gyro_noise_std,3)
-        g=np.array([0.,0.,-9.80665]); acc=gt.orientation.inv().apply(gt.acceleration-g)+self.rng.normal(0,self.accel_noise_std,3)
+        g=np.array([0.,0.,-9.80665]); acc=gt.orientation.inv().apply(gt.acceleration-g)+self.accel_bias+self.rng.normal(0,self.accel_noise_std,3)
         return ImuSample(gt.timestamp,gyro,acc)
 
 class CameraSimulator:
