@@ -85,7 +85,12 @@ class InertialESKF:
 
     def update_camera_relative(self,relative_rotation,reference_orientation,tracks=0,track_rms_deg=float('nan'),parallax_detected=False,range_tilt_supported=False):
         reference=self.camera_clone_orientation if self.has_camera_clone else reference_orientation;target=reference*relative_rotation;raw=(target*self.orientation.inv()).as_rotvec();count_quality=max(.05,min(1.,(tracks-3)/6.));rms_quality=max(.05,min(1.,1.-track_rms_deg/1.5)) if np.isfinite(track_rms_deg) else .05;quality=count_quality*rms_quality;sigma=self.camera_noise/max(np.sqrt(quality),.15);imu_delta=reference.inv()*self.orientation
-        use_yaw_only=bool(parallax_detected and not range_tilt_supported);g=np.array([0.,0.,1.]);Proj=np.outer(g,g) if use_yaw_only else np.eye(3);residual=Proj@raw
+        # Once the relative Camera update is allowed to teach gyro bias through
+        # the cloned-pose covariance, parallax-contaminated Roll/Pitch residuals
+        # are too dangerous even when Range tilt is available. Under detected
+        # parallax Camera is therefore strictly a heading constraint; Range owns
+        # tilt and metric normal translation owns the translational coupling.
+        use_yaw_only=bool(parallax_detected);g=np.array([0.,0.,1.]);Proj=np.outer(g,g) if use_yaw_only else np.eye(3);residual=Proj@raw
         if self.has_camera_clone:
             H=np.zeros((3,18));H[:,6:9]=Proj;H[:,15:18]=-Proj;coupling='cloned_pose_relative_yaw' if use_yaw_only else 'cloned_pose_relative'
             active_rows=None
