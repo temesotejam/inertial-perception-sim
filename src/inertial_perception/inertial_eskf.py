@@ -32,13 +32,16 @@ class InertialESKF:
     def _inject(self,dx):
         self.position+=dx[:3];self.velocity+=dx[3:6];self.orientation=Rotation.from_rotvec(dx[6:9])*self.orientation;self.gyro_bias+=dx[9:12];self.accel_bias+=dx[12:15]
 
-    def _kalman(self,residual,H,R_cov):
-        residual=np.atleast_1d(np.asarray(residual,float));S=H@self.P@H.T+R_cov;K=self.P@H.T@np.linalg.inv(S);dx=K@residual
+    def _kalman(self,residual,H,R_cov,active_rows=None):
+        residual=np.atleast_1d(np.asarray(residual,float));S=H@self.P@H.T+R_cov;K=self.P@H.T@np.linalg.inv(S)
+        if active_rows is not None:
+            mask=np.zeros(15,float);mask[np.asarray(active_rows,int)]=1.0;K=K*mask[:,None]
+        dx=K@residual
         I=np.eye(15);A=I-K@H;self.P=A@self.P@A.T+K@R_cov@K.T;self.P=(self.P+self.P.T)*.5
         return dx
 
-    def _update(self,residual,H,R_cov,kind,extra=None):
-        residual=np.asarray(residual,float);before=self.orientation;dx=self._kalman(residual,H,R_cov);self._inject(dx);correction=(self.orientation*before.inv()).magnitude()
+    def _update(self,residual,H,R_cov,kind,extra=None,active_rows=None):
+        residual=np.asarray(residual,float);before=self.orientation;dx=self._kalman(residual,H,R_cov,active_rows=active_rows);self._inject(dx);correction=(self.orientation*before.inv()).magnitude()
         ev={"kind":kind,"residual_deg":float(np.degrees(np.linalg.norm(residual))),"correction_deg":float(np.degrees(correction)),"filter":"ins_eskf","bias_norm_dps":float(np.degrees(np.linalg.norm(self.gyro_bias))),"accel_bias_norm":float(np.linalg.norm(self.accel_bias)),"sigma_att_deg":float(np.degrees(np.sqrt(np.mean(np.diag(self.P)[6:9])))),"sigma_pos_m":float(np.sqrt(np.mean(np.diag(self.P)[:3]))),"sigma_vel_mps":float(np.sqrt(np.mean(np.diag(self.P)[3:6])))}
         if extra:ev.update(extra)
         self.last_event=ev
@@ -60,7 +63,14 @@ class InertialESKF:
 
     def update_camera_relative(self,relative_rotation,reference_orientation,tracks=0,track_rms_deg=float('nan')):
         target=reference_orientation*relative_rotation;residual=(target*self.orientation.inv()).as_rotvec();count_quality=max(.05,min(1.,(tracks-3)/6.));rms_quality=max(.05,min(1.,1.-track_rms_deg/1.5)) if np.isfinite(track_rms_deg) else .05;quality=count_quality*rms_quality;sigma=self.camera_noise/max(np.sqrt(quality),.15);H=np.zeros((3,15));H[:,6:9]=np.eye(3);imu_delta=reference_orientation.inv()*self.orientation
-        extra={"tracks":int(tracks),"track_rms_deg":float(track_rms_deg),"visual_rotation_deg":float(np.degrees(relative_rotation.magnitude())),"imu_rotation_deg":float(np.degrees(imu_delta.magnitude())),"visual_quality":float(quality),"measurement_sigma_deg":float(np.degrees(sigma))};self._update(residual,H,np.eye(3)*sigma**2,"camera_relative",extra)
+        extra={"tracks":int(tracks),"track_rms_deg":float(track_rms_deg),"visual_rotation_deg":float(np.degrees(relative_rotation.magnitude())),"imu_rotation_deg":float(np.degrees(imu_delta.magnitude())),"visual_quality":float(quality),"measurement_sigma_deg":float(np.degrees(sigma)),"camera_state_coupling":"attitude_only"}
+        # The visual measurement is relative to a previous fused orientation and
+        # is therefore correlated with the current INS state. Until a cloned-pose
+        # relative update is implemented, inject it only into attitude. Let the
+        # corrected attitude influence p/v on subsequent IMU propagation instead
+        # of spuriously teaching gyro/accel bias or velocity from a correlated
+        # pseudo-absolute orientation observation.
+        self._update(residual,H,np.eye(3)*sigma**2,"camera_relative",extra,active_rows=np.arange(6,9))
 
     def update_range_relative(self,previous_normal,current_normal,reference_orientation,pairs=0,range_rms_m=float('nan'),translation_m=float('nan'),range_rotation_deg=float('nan')):
         desired_world=reference_orientation.apply(np.asarray(previous_normal,float));current_world=self.orientation.apply(np.asarray(current_normal,float));corr=align_vector_correction(current_world,desired_world);residual=corr.as_rotvec();count_quality=max(.05,min(1.,(pairs-7)/16.));rms_quality=max(.05,min(1.,1.-range_rms_m/.12)) if np.isfinite(range_rms_m) else .05;translation_quality=max(.05,min(1.,1.-translation_m/.22)) if np.isfinite(translation_m) else .05;quality=count_quality*rms_quality*translation_quality;sigma=self.range_noise/max(np.sqrt(quality),.18);n=current_world/np.linalg.norm(current_world);H=np.zeros((3,15));H[:,6:9]=np.eye(3)-np.outer(n,n);imu_delta=reference_orientation.inv()*self.orientation
