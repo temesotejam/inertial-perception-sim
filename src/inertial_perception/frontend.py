@@ -1,24 +1,60 @@
 from __future__ import annotations
 import itertools
 import numpy as np
+from scipy.optimize import least_squares
 from scipy.spatial.transform import Rotation
 
 
-def visual_relative_rotation(previous_frame,current_frame,camera,min_tracks=4,rotation_prior=None):
-    """Estimate frame-to-frame camera rotation from matched image bearings.
+def _epipolar_refine(prev_b,cur_b,rotation_prior,min_tracks=5):
+    """Refine relative Camera rotation while explicitly fitting translation direction.
 
-    An inertial relative-rotation prior rejects tracks whose motion is
-    inconsistent with rigid rotation. A large residual to that prior is also
-    exposed as a parallax indicator so the ESKF can avoid treating translation-
-    contaminated Roll/Pitch as a trustworthy attitude observation.
+    Bearings satisfy b_prev^T [t]_x R b_cur = 0.  The inertial rotation prior is
+    used only for initialization and weak regularization; translation direction
+    is optimized as a nuisance variable so parallax is not forced into Roll/Pitch.
     """
+    prev_b=np.asarray(prev_b,float);cur_b=np.asarray(cur_b,float)
+    if rotation_prior is None or len(prev_b)<min_tracks:return None
+    prior_r=rotation_prior.as_rotvec();best=None
+    starts=np.eye(3).tolist()+(-np.eye(3)).tolist()
+    def unpack(x):
+        r=Rotation.from_rotvec(x[:3]);t=np.asarray(x[3:6],float);n=np.linalg.norm(t)
+        if n<1e-9:t=np.array([1.,0.,0.])
+        else:t=t/n
+        return r,t
+    def residual(x):
+        r,t=unpack(x);rb=r.apply(cur_b);epi=np.einsum('ij,ij->i',prev_b,np.cross(t,rb))
+        reg=.035*(x[:3]-prior_r)
+        return np.concatenate([epi,reg])
+    for t0 in starts:
+        x0=np.r_[prior_r,np.asarray(t0,float)]
+        try:sol=least_squares(residual,x0,loss='soft_l1',f_scale=.004,max_nfev=120)
+        except Exception:continue
+        r,t=unpack(sol.x);delta=float((r*rotation_prior.inv()).magnitude())
+        if not np.isfinite(delta) or delta>np.radians(3.0):continue
+        rb=r.apply(cur_b);epi=np.abs(np.einsum('ij,ij->i',prev_b,np.cross(t,rb)));ang=np.arcsin(np.clip(epi,0,1))
+        med=float(np.median(ang));score=med+.02*delta
+        if best is None or score<best[0]:best=(score,r,t,ang)
+    if best is None:return None
+    _,r,t,ang=best;thr=np.radians(.75);ids=np.where(ang<thr)[0]
+    if len(ids)<min_tracks:ids=np.argsort(ang)[:min_tracks]
+    rms=float(np.degrees(np.sqrt(np.mean(ang[ids]**2))))
+    prior_rb=rotation_prior.apply(cur_b);prior_epi=[]
+    for t0 in starts:
+        tt=np.asarray(t0,float);e=np.abs(np.einsum('ij,ij->i',prev_b,np.cross(tt,prior_rb)));prior_epi.append(np.median(np.arcsin(np.clip(e,0,1))))
+    improvement=float(np.min(prior_epi)-np.median(ang))
+    if improvement<np.radians(.01):return None
+    return {'rotation':r,'translation_direction':t,'inliers':ids,'epipolar_rms_deg':rms,'epipolar_improvement_deg':float(np.degrees(improvement))}
+
+
+def visual_relative_rotation(previous_frame,current_frame,camera,min_tracks=4,rotation_prior=None):
+    """Estimate frame-to-frame camera rotation from matched image bearings."""
     if previous_frame is None or current_frame is None:return None
     prev={f.feature_id:f for f in previous_frame.features};pairs=[]
     for f in current_frame.features:
         p=prev.get(f.feature_id)
         if p is not None:pairs.append((camera.bearing_from_pixel(p.u,p.v),camera.bearing_from_pixel(f.u,f.v)))
     if len(pairs)<min_tracks:return None
-    prev_b=np.asarray([a for a,_ in pairs]);cur_b=np.asarray([b for _,b in pairs]);n=len(pairs);candidate_tracks=n
+    prev_all=np.asarray([a for a,_ in pairs]);cur_all=np.asarray([b for _,b in pairs]);prev_b=prev_all.copy();cur_b=cur_all.copy();n=len(pairs);candidate_tracks=n
     prior_rms=float('nan');prior_kept=n;weights=None;parallax=False
     if rotation_prior is not None:
         pred=np.asarray(rotation_prior.apply(cur_b));pe=np.arccos(np.clip(np.sum(pred*prev_b,axis=1),-1,1));prior_rms=float(np.degrees(np.sqrt(np.mean(pe**2))));parallax=bool(candidate_tracks>=5 and prior_rms>.22)
@@ -45,7 +81,14 @@ def visual_relative_rotation(previous_frame,current_frame,camera,min_tracks=4,ro
         pred=rot.apply(cur_b);err=np.arccos(np.clip(np.sum(pred*prev_b,axis=1),-1,1));best_in=np.argsort(err)[:max(min_tracks,int(np.ceil(n*.6)))]
     w=None if weights is None else weights[best_in]
     rot,_=Rotation.align_vectors(prev_b[best_in],cur_b[best_in],weights=w);pred=rot.apply(cur_b[best_in]);err=np.arccos(np.clip(np.sum(pred*prev_b[best_in],axis=1),-1,1));rms=float(np.degrees(np.sqrt(np.mean(err**2))))
-    return {"rotation":rot,"tracks":int(len(best_in)),"candidate_tracks":int(candidate_tracks),"track_rms_deg":rms,"prior_used":bool(rotation_prior is not None),"prior_kept_tracks":int(prior_kept),"prior_residual_rms_deg":prior_rms,"parallax_detected":parallax,"visual_model":"rotation_with_parallax_guard"}
+    model='rotation_with_parallax_guard';epi_t=None;epi_gain=float('nan')
+    if parallax and rotation_prior is not None and candidate_tracks>=5:
+        epi=_epipolar_refine(prev_all,cur_all,rotation_prior,min_tracks=5)
+        if epi is not None:
+            rot=epi['rotation'];rms=epi['epipolar_rms_deg'];best_in=epi['inliers'];epi_t=epi['translation_direction'];epi_gain=epi['epipolar_improvement_deg'];model='epipolar_rotation_translation'
+    out={"rotation":rot,"tracks":int(len(best_in)),"candidate_tracks":int(candidate_tracks),"track_rms_deg":rms,"prior_used":bool(rotation_prior is not None),"prior_kept_tracks":int(prior_kept),"prior_residual_rms_deg":prior_rms,"parallax_detected":parallax,"visual_model":model}
+    if epi_t is not None:out['epipolar_translation_direction']=np.asarray(epi_t,float).tolist();out['epipolar_improvement_deg']=epi_gain
+    return out
 
 
 def _range_points(frame):
