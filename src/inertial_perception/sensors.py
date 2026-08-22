@@ -1,5 +1,6 @@
 from __future__ import annotations
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 from scipy.spatial.transform import Rotation
 from .types import ImuSample, CameraFrame, CameraFeature, RangeFrame, RayMeasurement, GroundTruthState
 from .world import ray_scene_distance
@@ -17,41 +18,46 @@ class CameraSimulator:
     """Generic monocular camera with image-space feature tracking.
 
     Harris corners are detected from the rendered RGB image. Persistent IDs are
-    assigned using only image-space motion and a normalized local appearance
-    patch. Renderer world hits are retained as simulation-only debug/evaluation
-    metadata and are not used to establish tracks or estimate attitude.
+    assigned from image-space displacement and normalized appearance patches.
+    Matching is solved globally so one strong candidate cannot greedily steal a
+    previous track from a better correspondence.
     """
-    def __init__(self,rng,width=640,height=480,fov_deg=70.,pixel_noise_std=.25,dropout=.03,render_width=80,render_height=60,max_features=32,track_radius_px=70.):
+    def __init__(self,rng,width=640,height=480,fov_deg=70.,pixel_noise_std=.25,dropout=.03,render_width=96,render_height=72,max_features=64,track_radius_px=75.):
         self.rng=rng; self.width=width; self.height=height; self.fov_deg=fov_deg
         self.fx=width/(2*np.tan(np.radians(fov_deg)/2)); self.fy=self.fx; self.cx=width/2; self.cy=height/2
         self.pixel_noise_std=pixel_noise_std; self.dropout=dropout; self.render_width=render_width; self.render_height=render_height; self.max_features=max_features; self.track_radius_px=track_radius_px
         self._next_id=0; self._previous=[]; self._previous_desc={}
-    def _patch_descriptor(self,rgb,x,y,r=2):
+    def _patch_descriptor(self,rgb,x,y,r=3):
         gray=(.299*rgb[:,:,0]+.587*rgb[:,:,1]+.114*rgb[:,:,2]).astype(float)/255.
         pad=np.pad(gray,r,mode='reflect'); patch=pad[y:y+2*r+1,x:x+2*r+1].reshape(-1); patch=patch-patch.mean(); n=np.linalg.norm(patch)
         return patch/n if n>1e-8 else patch
     def _assign_ids(self,candidates):
-        available=set(range(len(self._previous))); assigned=[]; desc_out={}
-        for u,v,score,pw,desc in sorted(candidates,key=lambda x:x[2],reverse=True):
-            best=None; best_cost=1e9
-            for j in available:
-                f=self._previous[j]; dsp=float(np.hypot(f.u-u,f.v-v))
-                if dsp>self.track_radius_px:continue
+        if not candidates:
+            self._previous_desc={};return []
+        assigned_ids=[None]*len(candidates)
+        if self._previous:
+            cost=np.full((len(self._previous),len(candidates)),1e6,float)
+            for i,f in enumerate(self._previous):
                 pd=self._previous_desc.get(f.feature_id)
                 if pd is None:continue
-                dd=float(np.linalg.norm(desc-pd))
-                if dd>1.0:continue
-                cost=dd+.30*dsp/self.track_radius_px
-                if cost<best_cost:best=j;best_cost=cost
-            if best is None:
-                fid=self._next_id;self._next_id+=1
-            else:
-                fid=self._previous[best].feature_id;available.remove(best)
-            f=CameraFeature(int(fid),float(u),float(v),float(max(score,0.)),pw);assigned.append(f);desc_out[int(fid)]=desc
-        self._previous_desc=desc_out;return assigned
+                for j,(u,v,score,pw,desc) in enumerate(candidates):
+                    dsp=float(np.hypot(f.u-u,f.v-v))
+                    if dsp>self.track_radius_px:continue
+                    dd=float(np.linalg.norm(desc-pd))
+                    if dd>1.05:continue
+                    cost[i,j]=dd+.28*dsp/self.track_radius_px
+            rows,cols=linear_sum_assignment(cost)
+            for i,j in zip(rows,cols):
+                if cost[i,j]<1.18:assigned_ids[j]=self._previous[i].feature_id
+        feats=[];desc_out={}
+        for j,(u,v,score,pw,desc) in enumerate(candidates):
+            fid=assigned_ids[j]
+            if fid is None:fid=self._next_id;self._next_id+=1
+            f=CameraFeature(int(fid),float(u),float(v),float(max(score,0.)),pw);feats.append(f);desc_out[int(fid)]=desc
+        self._previous_desc=desc_out;return feats
     def sample(self,gt):
         rgb,depth,world=render_camera(gt,self.render_width,self.render_height,self.fov_deg)
-        detected=detect_harris_features(rgb,depth,world,self.max_features);sx=self.width/self.render_width;sy=self.height/self.render_height;candidates=[]
+        detected=detect_harris_features(rgb,depth,world,self.max_features,min_distance=3,percentile=86);sx=self.width/self.render_width;sy=self.height/self.render_height;candidates=[]
         for x,y,score,pw in detected:
             if self.rng.random()<self.dropout:continue
             u=(x+.5)*sx+self.rng.normal(0,self.pixel_noise_std);v=(y+.5)*sy+self.rng.normal(0,self.pixel_noise_std)

@@ -12,6 +12,11 @@ from .math3d import rotation_error_deg
 
 def _euler_deg(r):return r.as_euler('xyz',degrees=True).tolist()
 
+def _sensor_rngs(seed):
+ # Independent streams make sensor A/B comparisons fair: changing Camera
+ # feature count must never change the IMU or Range noise realization.
+ seed=int(seed);return (np.random.default_rng(seed),np.random.default_rng(seed+1000003),np.random.default_rng(seed+2000003))
+
 def _range_to_camera_overlay(frame,cam,range_gt=None,camera_gt=None):
  out=[]
  for idx,r in enumerate(frame.rays):
@@ -38,7 +43,7 @@ def _diag(est):
  return {'eskf_sigma_att_deg':np.degrees(np.sqrt(d[:3])).tolist(),'eskf_sigma_bias_dps':np.degrees(np.sqrt(d[3:6])).tolist()}
 
 def run_simulation(scenario='combined',duration=10.,seed=42,camera_enabled=True,range_enabled=True,imu_hz=200,camera_hz=15,range_hz=15,estimator_kind='ins_eskf'):
- rng=np.random.default_rng(seed);imu=ImuSimulator(rng);cam=CameraSimulator(rng);rngs=GridRangeSimulator(rng);gt0=truth_at(0,scenario);est=_make_estimator(estimator_kind,gt0);dt=1/imu_hz;next_cam=next_range=0.;records=[]
+ imu_rng,cam_rng,range_rng=_sensor_rngs(seed);imu=ImuSimulator(imu_rng);cam=CameraSimulator(cam_rng);rngs=GridRangeSimulator(range_rng);gt0=truth_at(0,scenario);est=_make_estimator(estimator_kind,gt0);dt=1/imu_hz;next_cam=next_range=0.;records=[]
  last_cam=last_range=last_cam_gt=last_range_gt=None;prev_cam=None;prev_cam_reference=None;last_visual=None;prev_range=None;prev_range_reference=None;prev_range_position=None;last_range_frontend=None
  for k in range(int(round(duration*imu_hz))+1):
   t=k*dt;gt=truth_at(t,scenario);est.propagate(imu.sample(gt));event={'kind':'imu','residual_deg':0.,'correction_deg':0.,'filter':estimator_kind};camera_sampled=range_sampled=False
@@ -83,7 +88,7 @@ def run_simulation(scenario='combined',duration=10.,seed=42,camera_enabled=True,
  errors=np.array([r['error_deg'] for r in records]);metrics={'scenario':scenario,'duration_s':duration,'seed':seed,'camera_enabled':camera_enabled,'range_enabled':range_enabled,'estimator_kind':estimator_kind,'orientation_rmse_deg':float(np.sqrt(np.mean(errors**2))),'orientation_mae_deg':float(np.mean(np.abs(errors))),'orientation_max_deg':float(np.max(errors)),'final_gyro_bias_dps':np.degrees(est.gyro_bias).tolist()}
  if hasattr(est,'position'):
   pe=np.array([r['position_error_m'] for r in records]);ze=np.array([r['vertical_position_error_m'] for r in records]);ve=np.array([r['velocity_error_mps'] for r in records]);metrics.update({'position_rmse_m':float(np.sqrt(np.mean(pe**2))),'vertical_position_rmse_m':float(np.sqrt(np.mean(ze**2))),'velocity_rmse_mps':float(np.sqrt(np.mean(ve**2))),'final_position_error_m':float(pe[-1]),'final_vertical_position_error_m':float(ze[-1]),'final_velocity_error_mps':float(ve[-1]),'final_accel_bias':est.accel_bias.tolist()})
- return {'meta':{'imu_hz':imu_hz,'camera_hz':camera_hz,'range_hz':range_hz,'estimator_kind':estimator_kind,'state':'p,v,q,b_g,b_a' if hasattr(est,'position') else 'q,b_g','camera':{'width':cam.width,'height':cam.height,'fov_deg':cam.fov_deg,'render_width':cam.render_width,'render_height':cam.render_height,'feature_detector':'Harris','tracker':'2D patch + inertial-prior gating + adaptive parallax guard','constraint':'Version-7 active relative attitude + cloned-pose bias shadow','clone_bias_mode':'shadow'},'range':{'rows':rngs.rows,'cols':rngs.cols,'tilt_down_deg':rngs.tilt_down_deg,'tracker':'local-plane temporal normal + ICP health check','constraint':'relative_tilt + normal_translation','translation_observability':'local_plane_normal_only','absolute_floor_prior':False},'scene':SCENE},'metrics':metrics,'records':records}
+ return {'meta':{'imu_hz':imu_hz,'camera_hz':camera_hz,'range_hz':range_hz,'estimator_kind':estimator_kind,'state':'p,v,q,b_g,b_a' if hasattr(est,'position') else 'q,b_g','rng_streams':'independent_imu_camera_range','camera':{'width':cam.width,'height':cam.height,'fov_deg':cam.fov_deg,'render_width':cam.render_width,'render_height':cam.render_height,'feature_detector':'Harris','tracker':'dense Harris + global patch assignment + inertial-prior gating','constraint':'adaptive relative attitude + cloned-pose bias shadow','clone_bias_mode':'shadow'},'range':{'rows':rngs.rows,'cols':rngs.cols,'tilt_down_deg':rngs.tilt_down_deg,'tracker':'local-plane temporal normal + ICP health check','constraint':'relative_tilt + normal_translation','translation_observability':'local_plane_normal_only','absolute_floor_prior':False},'scene':SCENE},'metrics':metrics,'records':records}
 
 def compare_modes(scenario='combined',duration=10.,seed=42,estimator_kind='ins_eskf'):
  modes={'imu_only':(False,False),'imu_camera':(True,False),'imu_range':(False,True),'all':(True,True)};return {name:run_simulation(scenario,duration,seed,c,r,estimator_kind=estimator_kind) for name,(c,r) in modes.items()}

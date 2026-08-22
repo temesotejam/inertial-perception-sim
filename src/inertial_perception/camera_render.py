@@ -60,12 +60,6 @@ def _pillar_hits(origin,directions,obj,max_range):
 
 
 def render_camera(gt,width=96,height=72,fov_deg=70.,max_range=7.0):
-    """Render a small RGB image and per-pixel metric depth from the shared scene.
-
-    Body/camera convention: +X forward, +Y left, +Z up. The returned RGB image
-    is the exact image used by the feature detector and later displayed by the
-    browser viewer, removing the old independent-renderer mismatch.
-    """
     fx=width/(2*np.tan(np.radians(fov_deg)/2)); fy=fx; cx=width/2; cy=height/2
     yy,xx=np.mgrid[0:height,0:width]
     dirs_body=np.stack((np.ones_like(xx,float),-(xx+.5-cx)/fx,-(yy+.5-cy)/fy),axis=-1).reshape(-1,3)
@@ -76,41 +70,32 @@ def render_camera(gt,width=96,height=72,fov_deg=70.,max_range=7.0):
         d=_pillar_hits(origin,dirs_world,obj,max_range) if obj['type']=='pillar' else _box_hits(origin,dirs_world,obj,max_range)
         m=d<best; best[m]=d[m]; hit_id[m]=j
     finite=np.isfinite(best); points=np.full((len(best),3),np.nan,float); points[finite]=origin+dirs_world[finite]*best[finite,None]
-
-    rgb=np.zeros((len(best),3),float)
-    # Sky gradient.
-    sky_t=np.clip((yy.reshape(-1)+.5)/height,0,1)[:,None]
+    rgb=np.zeros((len(best),3),float);sky_t=np.clip((yy.reshape(-1)+.5)/height,0,1)[:,None]
     rgb[:]=np.array([126,184,220])*(1-sky_t)+np.array([226,235,226])*sky_t
     terrain=finite&(hit_id==0)
     if np.any(terrain):
-        p=points[terrain]; base=_hex_rgb(SCENE['terrain']['base_color'])
-        tex=.82+.11*np.sin(4.2*p[:,0])*.5+.08*np.cos(5.1*p[:,1])+.05*np.sin(8*(p[:,0]+p[:,1]))
-        rgb[terrain]=base[None,:]*tex[:,None]
+        p=points[terrain]; base=_hex_rgb(SCENE['terrain']['base_color']);tex=.82+.11*np.sin(4.2*p[:,0])*.5+.08*np.cos(5.1*p[:,1])+.05*np.sin(8*(p[:,0]+p[:,1]));rgb[terrain]=base[None,:]*tex[:,None]
     for j,obj in enumerate(SCENE['objects'],start=1):
         m=finite&(hit_id==j)
-        if not np.any(m): continue
-        p=points[m]; base=_hex_rgb(obj['color']); tex=.82+.10*np.sin(8*p[:,0])+ .08*np.cos(7*p[:,2])
-        rgb[m]=base[None,:]*tex[:,None]
+        if not np.any(m):continue
+        p=points[m];base=_hex_rgb(obj['color']);tex=.82+.10*np.sin(8*p[:,0])+.08*np.cos(7*p[:,2]);rgb[m]=base[None,:]*tex[:,None]
     rgb=np.clip(rgb,0,255).astype(np.uint8).reshape(height,width,3)
     return rgb,best.reshape(height,width),points.reshape(height,width,3)
 
 
-def detect_harris_features(rgb,depth,world_points,max_features=36,min_distance=4):
-    """Detect real image corners and attach the renderer's world hit at that pixel."""
+def detect_harris_features(rgb,depth,world_points,max_features=64,min_distance=3,percentile=86):
+    """Detect image corners with a configurable density threshold."""
     gray=(.299*rgb[:,:,0]+.587*rgb[:,:,1]+.114*rgb[:,:,2]).astype(float)/255.0
     ix=sobel(gray,axis=1,mode='nearest'); iy=sobel(gray,axis=0,mode='nearest')
     sxx=gaussian_filter(ix*ix,1); syy=gaussian_filter(iy*iy,1); sxy=gaussian_filter(ix*iy,1)
     response=(sxx*syy-sxy*sxy)-.045*(sxx+syy)**2
-    valid=np.isfinite(depth)&(depth>0)
-    vals=response[valid]
+    valid=np.isfinite(depth)&(depth>0);vals=response[valid]
     if vals.size==0:return []
-    threshold=max(float(np.percentile(vals,92)),1e-8)
+    threshold=max(float(np.percentile(vals,percentile)),1e-8)
     local=response==maximum_filter(response,size=2*min_distance+1,mode='nearest')
-    ys,xs=np.nonzero(valid&local&(response>=threshold))
-    order=np.argsort(response[ys,xs])[::-1]
-    out=[]
+    ys,xs=np.nonzero(valid&local&(response>=threshold));order=np.argsort(response[ys,xs])[::-1];out=[]
     for idx in order:
-        y=int(ys[idx]); x=int(xs[idx]); score=float(response[y,x])
+        y=int(ys[idx]);x=int(xs[idx]);score=float(response[y,x])
         if any((x-p[0])**2+(y-p[1])**2<min_distance**2 for p in out):continue
         out.append((x,y,score,world_points[y,x].copy()))
         if len(out)>=max_features:break
