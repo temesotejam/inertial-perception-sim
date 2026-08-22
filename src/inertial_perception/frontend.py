@@ -22,8 +22,7 @@ def _epipolar_refine(prev_b,cur_b,rotation_prior,min_tracks=5):
         else:t=t/n
         return r,t
     def residual(x):
-        r,t=unpack(x);rb=r.apply(cur_b);epi=np.einsum('ij,ij->i',prev_b,np.cross(t,rb))
-        reg=.035*(x[:3]-prior_r)
+        r,t=unpack(x);rb=r.apply(cur_b);epi=np.einsum('ij,ij->i',prev_b,np.cross(t,rb));reg=.035*(x[:3]-prior_r)
         return np.concatenate([epi,reg])
     for t0 in starts:
         x0=np.r_[prior_r,np.asarray(t0,float)]
@@ -31,8 +30,7 @@ def _epipolar_refine(prev_b,cur_b,rotation_prior,min_tracks=5):
         except Exception:continue
         r,t=unpack(sol.x);delta=float((r*rotation_prior.inv()).magnitude())
         if not np.isfinite(delta) or delta>np.radians(3.0):continue
-        rb=r.apply(cur_b);epi=np.abs(np.einsum('ij,ij->i',prev_b,np.cross(t,rb)));ang=np.arcsin(np.clip(epi,0,1))
-        med=float(np.median(ang));score=med+.02*delta
+        rb=r.apply(cur_b);epi=np.abs(np.einsum('ij,ij->i',prev_b,np.cross(t,rb)));ang=np.arcsin(np.clip(epi,0,1));med=float(np.median(ang));score=med+.02*delta
         if best is None or score<best[0]:best=(score,r,t,ang)
     if best is None:return None
     _,r,t,ang=best;thr=np.radians(.75);ids=np.where(ang<thr)[0]
@@ -68,8 +66,7 @@ def visual_relative_rotation(previous_frame,current_frame,camera,min_tracks=4,ro
     combos=list(itertools.combinations(range(n),3))[:160]
     for ids in combos:
         try:
-            w=None if weights is None else weights[list(ids)]
-            rot,_=Rotation.align_vectors(prev_b[list(ids)],cur_b[list(ids)],weights=w)
+            w=None if weights is None else weights[list(ids)];rot,_=Rotation.align_vectors(prev_b[list(ids)],cur_b[list(ids)],weights=w)
         except Exception:continue
         pred=rot.apply(cur_b);err=np.arccos(np.clip(np.sum(pred*prev_b,axis=1),-1,1));inn=np.where(err<thr)[0]
         if len(inn)<min_tracks:continue
@@ -82,11 +79,15 @@ def visual_relative_rotation(previous_frame,current_frame,camera,min_tracks=4,ro
     w=None if weights is None else weights[best_in]
     rot,_=Rotation.align_vectors(prev_b[best_in],cur_b[best_in],weights=w);pred=rot.apply(cur_b[best_in]);err=np.arccos(np.clip(np.sum(pred*prev_b[best_in],axis=1),-1,1));rms=float(np.degrees(np.sqrt(np.mean(err**2))))
     model='rotation_with_parallax_guard';epi_t=None;epi_gain=float('nan')
-    if parallax and rotation_prior is not None and candidate_tracks>=5:
+    # A disagreement with the inertial prior alone is not evidence of translation:
+    # gyro drift or prior error can cause it during pure rotation.  Require the
+    # best image-only rotation fit itself to leave a parallax-like residual.
+    epipolar_candidate=bool(parallax and rotation_prior is not None and candidate_tracks>=5 and rms>.18)
+    if epipolar_candidate:
         epi=_epipolar_refine(prev_all,cur_all,rotation_prior,min_tracks=5)
         if epi is not None:
             rot=epi['rotation'];rms=epi['epipolar_rms_deg'];best_in=epi['inliers'];epi_t=epi['translation_direction'];epi_gain=epi['epipolar_improvement_deg'];model='epipolar_rotation_translation'
-    out={"rotation":rot,"tracks":int(len(best_in)),"candidate_tracks":int(candidate_tracks),"track_rms_deg":rms,"prior_used":bool(rotation_prior is not None),"prior_kept_tracks":int(prior_kept),"prior_residual_rms_deg":prior_rms,"parallax_detected":parallax,"visual_model":model}
+    out={"rotation":rot,"tracks":int(len(best_in)),"candidate_tracks":int(candidate_tracks),"track_rms_deg":rms,"prior_used":bool(rotation_prior is not None),"prior_kept_tracks":int(prior_kept),"prior_residual_rms_deg":prior_rms,"parallax_detected":parallax,"epipolar_candidate":epipolar_candidate,"visual_model":model}
     if epi_t is not None:out['epipolar_translation_direction']=np.asarray(epi_t,float).tolist();out['epipolar_improvement_deg']=epi_gain
     return out
 
@@ -112,8 +113,7 @@ def _local_range_plane(frame,local_fraction=.45):
 
 
 def _minimal_rotation(source,target):
-    a=np.asarray(source,float);b=np.asarray(target,float);a/=np.linalg.norm(a);b/=np.linalg.norm(b)
-    cross=np.cross(a,b);s=np.linalg.norm(cross);c=float(np.clip(np.dot(a,b),-1,1))
+    a=np.asarray(source,float);b=np.asarray(target,float);a/=np.linalg.norm(a);b/=np.linalg.norm(b);cross=np.cross(a,b);s=np.linalg.norm(cross);c=float(np.clip(np.dot(a,b),-1,1))
     if s<1e-12:
         if c>0:return Rotation.identity()
         axis=np.cross(a,[1.,0.,0.])
@@ -124,18 +124,13 @@ def _minimal_rotation(source,target):
 
 def _range_icp_diagnostics(prev,cur,min_pairs=8,max_pair_distance=.28):
     if len(prev)<min_pairs or len(cur)<min_pairs:return None
-    dist=np.linalg.norm(cur[:,None,:]-prev[None,:,:],axis=2);j=np.argmin(dist,axis=1);d=dist[np.arange(len(cur)),j]
-    i_back=np.argmin(dist,axis=0);mutual=np.array([i_back[jj]==ii for ii,jj in enumerate(j)],bool)
-    ids=np.where(mutual&(d<max_pair_distance))[0]
-    if len(ids)<min_pairs:
-        ids=np.argsort(d)[:min(min_pairs,len(cur))];ids=ids[d[ids]<max_pair_distance*1.5]
+    dist=np.linalg.norm(cur[:,None,:]-prev[None,:,:],axis=2);j=np.argmin(dist,axis=1);d=dist[np.arange(len(cur)),j];i_back=np.argmin(dist,axis=0);mutual=np.array([i_back[jj]==ii for ii,jj in enumerate(j)],bool);ids=np.where(mutual&(d<max_pair_distance))[0]
+    if len(ids)<min_pairs:ids=np.argsort(d)[:min(min_pairs,len(cur))];ids=ids[d[ids]<max_pair_distance*1.5]
     if len(ids)<min_pairs:return None
     a=prev[j[ids]];b=cur[ids];ca=a.mean(axis=0);cb=b.mean(axis=0)
     try:rot,_=Rotation.align_vectors(a-ca,b-cb)
     except Exception:return None
-    trans=ca-rot.apply(cb);res=np.linalg.norm(rot.apply(b)+trans-a,axis=1)
-    keep=np.argsort(res)[:max(min_pairs,int(np.ceil(len(res)*.8)))];a=a[keep];b=b[keep];ca=a.mean(axis=0);cb=b.mean(axis=0)
-    rot,_=Rotation.align_vectors(a-ca,b-cb);trans=ca-rot.apply(cb);res=np.linalg.norm(rot.apply(b)+trans-a,axis=1)
+    trans=ca-rot.apply(cb);res=np.linalg.norm(rot.apply(b)+trans-a,axis=1);keep=np.argsort(res)[:max(min_pairs,int(np.ceil(len(res)*.8)))];a=a[keep];b=b[keep];ca=a.mean(axis=0);cb=b.mean(axis=0);rot,_=Rotation.align_vectors(a-ca,b-cb);trans=ca-rot.apply(cb);res=np.linalg.norm(rot.apply(b)+trans-a,axis=1)
     return {"pairs":int(len(keep)),"range_rms_m":float(np.sqrt(np.mean(res**2))),"translation_m":float(np.linalg.norm(trans))}
 
 
@@ -163,5 +158,4 @@ def range_normal_translation(previous_frame,current_frame,relative_rotation):
 
 
 def range_floor_normal(frame,local_fraction=.45):
-    p=_local_range_plane(frame,local_fraction)
-    return None if p is None else p["normal"]
+    p=_local_range_plane(frame,local_fraction);return None if p is None else p["normal"]
