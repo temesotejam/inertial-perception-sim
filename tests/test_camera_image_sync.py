@@ -38,5 +38,5 @@ def test_exported_camera_image_and_features_share_timestamp():
     for r in records[:5]:
         assert r['camera_timestamp']<=r['t']+1e-9
         assert len(r['camera_pose_euler'])==3
-        assert r['camera_render_size']==[80,60]
+        assert r['camera_render_size']==[96,72]
         assert abs(r.get('range_camera_dt_ms',0))<80
