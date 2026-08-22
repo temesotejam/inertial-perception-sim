@@ -73,16 +73,32 @@ def test_correlated_range_relative_update_injects_attitude_only():
     assert np.allclose(f.position,p,atol=1e-12);assert np.allclose(f.velocity,v,atol=1e-12);assert np.allclose(f.gyro_bias,bg,atol=1e-12);assert np.allclose(f.accel_bias,ba,atol=1e-12);assert f.last_event['range_state_coupling']=='attitude_only'
 
 
-def test_range_translation_updates_only_observable_normal_position():
+def test_range_translation_updates_only_observable_normal_position_without_clone():
     f=InertialESKF(initial_position=np.array([.4,-.2,1.0]),initial_velocity=np.array([.1,-.05,.02]),initial_orientation=Rotation.identity())
-    # Seed cross-axis covariance deliberately; the constrained update must still
-    # not move tangential position or directly learn velocity/bias states.
     f.P[:3,:3]=np.array([[.04,.015,.010],[.015,.05,-.012],[.010,-.012,.06]])
-    n=np.array([.3,-.4,.8660254]);n/=np.linalg.norm(n);ref_p=f.position.copy();ref_q=f.orientation
-    v=f.velocity.copy();bg=f.gyro_bias.copy();ba=f.accel_bias.copy();q=f.orientation
-    f.update_range_translation(n,.12,ref_p,ref_q,quality=1.,plane_rms_m=.005,normal_angle_deg=.2)
+    n=np.array([.3,-.4,.8660254]);n/=np.linalg.norm(n);ref_p=f.position.copy();ref_q=f.orientation;v=f.velocity.copy();bg=f.gyro_bias.copy();ba=f.accel_bias.copy();q=f.orientation
+    f.update_range_translation(n,.12,ref_p,ref_q,quality=1.,plane_rms_m=.005,normal_angle_deg=.2,enable_range_clone=False)
     dp=f.position-ref_p;normal=float(np.dot(dp,n));tangent=np.linalg.norm(dp-normal*n)
-    assert abs(normal)>1e-5 and tangent<1e-10
-    assert np.allclose(f.velocity,v,atol=1e-12);assert np.allclose(f.gyro_bias,bg,atol=1e-12);assert np.allclose(f.accel_bias,ba,atol=1e-12);assert rotation_error_deg(f.orientation,q)<1e-10
-    assert f.last_event['range_translation_state_coupling']=='normal_position_only'
-    assert f.last_event['tangential_position_correction_m']<1e-10
+    assert abs(normal)>1e-5 and tangent<1e-10;assert np.allclose(f.velocity,v,atol=1e-12);assert np.allclose(f.gyro_bias,bg,atol=1e-12);assert np.allclose(f.accel_bias,ba,atol=1e-12);assert rotation_error_deg(f.orientation,q)<1e-10
+    assert f.last_event['range_translation_state_coupling']=='normal_position_only';assert f.last_event['tangential_position_correction_m']<1e-10
+
+
+def test_camera_and_range_clones_can_coexist_and_be_replaced():
+    f=InertialESKF(initial_orientation=Rotation.identity());f.propagate(ImuSample(0.,np.zeros(3),np.array([0.,0.,9.80665])))
+    f.set_camera_clone();assert f.P.shape==(18,18) and f.has_camera_clone and not f.has_range_clone
+    f.set_range_position_clone();assert f.P.shape==(21,21) and f.has_camera_clone and f.has_range_clone
+    camera_ref=f.camera_clone_orientation;range_ref=f.range_clone_position.copy();f.set_camera_clone();assert f.P.shape==(21,21) and f.has_camera_clone and f.has_range_clone and np.allclose(f.range_clone_position,range_ref)
+    f.set_range_position_clone();assert f.P.shape==(21,21) and f.has_camera_clone and f.has_range_clone
+    for k in range(1,11):f.propagate(ImuSample(k*.005,np.array([.001,-.002,.003]),np.array([0.,0.,9.80665])))
+    assert np.all(np.isfinite(f.P)) and np.allclose(f.P,f.P.T,atol=1e-10)
+
+
+def test_range_position_clone_can_learn_accelerometer_bias_from_relative_displacement():
+    f=InertialESKF(initial_position=np.zeros(3),initial_velocity=np.zeros(3),initial_orientation=Rotation.identity(),gyro_noise_std=0.,accel_noise_std=0.,bias_rw_std=0.,accel_bias_rw_std=0.)
+    f.propagate(ImuSample(0.,np.zeros(3),np.array([0.,0.,9.80665])));f.set_range_position_clone();ref_p=f.position.copy();ref_q=f.orientation
+    accel_bias=np.array([0.,0.,.08])
+    for k in range(1,101):f.propagate(ImuSample(k*.005,np.zeros(3),np.array([0.,0.,9.80665])+accel_bias))
+    before=f.accel_bias.copy();f.update_range_translation(np.array([0.,0.,1.]),0.,ref_p,ref_q,quality=1.,plane_rms_m=.001,normal_angle_deg=0.,enable_range_clone=True)
+    assert f.last_event['range_translation_state_coupling']=='cloned_relative_position';assert f.last_event['range_position_clone_active'] is True
+    assert np.linalg.norm(f.accel_bias-before)>1e-6 and f.accel_bias[2]>before[2]
+    assert np.all(np.isfinite(f.P)) and np.allclose(f.P,f.P.T,atol=1e-10)
