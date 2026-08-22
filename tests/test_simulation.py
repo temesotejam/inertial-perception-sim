@@ -1,5 +1,7 @@
 import numpy as np
-from inertial_perception.simulation import compare_modes,run_simulation,compare_estimators
+from inertial_perception.simulation import compare_modes,run_simulation,compare_estimators,_sensor_rngs
+from inertial_perception.sensors import ImuSimulator,CameraSimulator,GridRangeSimulator
+from inertial_perception.world import truth_at
 
 
 def test_all_modes_are_finite_with_eskf():
@@ -32,3 +34,18 @@ def test_legacy_estimators_remain_available_for_regression_comparison():
     out=compare_estimators('combined',duration=2.,seed=11)
     assert set(out)=={'blend','attitude_eskf','ins_eskf'}
     for kind in out:assert np.isfinite(out[kind]['all']['metrics']['orientation_rmse_deg'])
+
+
+def test_sensor_rng_streams_are_independent_of_camera_workload():
+    a_imu,a_cam,a_range=_sensor_rngs(17);b_imu,b_cam,b_range=_sensor_rngs(17)
+    imu_a,imu_b=ImuSimulator(a_imu),ImuSimulator(b_imu);cam_a=CameraSimulator(a_cam);range_a,range_b=GridRangeSimulator(a_range),GridRangeSimulator(b_range)
+    gt=truth_at(.7,'translation')
+    # Consume a large amount of Camera randomness in only one copy.
+    for _ in range(8):cam_a.sample(gt)
+    ia,ib=imu_a.sample(gt),imu_b.sample(gt)
+    assert np.allclose(ia.angular_velocity,ib.angular_velocity)
+    assert np.allclose(ia.linear_acceleration,ib.linear_acceleration)
+    ra,rb=range_a.sample(gt),range_b.sample(gt)
+    da=np.array([r.distance for r in ra.rays]);db=np.array([r.distance for r in rb.rays])
+    assert np.array_equal(np.isnan(da),np.isnan(db))
+    assert np.allclose(da[~np.isnan(da)],db[~np.isnan(db)])
