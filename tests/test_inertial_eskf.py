@@ -71,3 +71,18 @@ def test_correlated_range_relative_update_injects_attitude_only():
     for t in np.arange(0.,.5,.005):f.propagate(ideal_imu(truth_at(float(t),'translation')))
     p=f.position.copy();v=f.velocity.copy();bg=f.gyro_bias.copy();ba=f.accel_bias.copy();q=f.orientation;n0=np.array([0.,0.,1.]);n1=Rotation.from_euler('x',2,degrees=True).inv().apply(n0);f.update_range_relative(n0,n1,q,pairs=20,range_rms_m=.01,translation_m=.01,range_rotation_deg=2.)
     assert np.allclose(f.position,p,atol=1e-12);assert np.allclose(f.velocity,v,atol=1e-12);assert np.allclose(f.gyro_bias,bg,atol=1e-12);assert np.allclose(f.accel_bias,ba,atol=1e-12);assert f.last_event['range_state_coupling']=='attitude_only'
+
+
+def test_range_translation_updates_only_observable_normal_position():
+    f=InertialESKF(initial_position=np.array([.4,-.2,1.0]),initial_velocity=np.array([.1,-.05,.02]),initial_orientation=Rotation.identity())
+    # Seed cross-axis covariance deliberately; the constrained update must still
+    # not move tangential position or directly learn velocity/bias states.
+    f.P[:3,:3]=np.array([[.04,.015,.010],[.015,.05,-.012],[.010,-.012,.06]])
+    n=np.array([.3,-.4,.8660254]);n/=np.linalg.norm(n);ref_p=f.position.copy();ref_q=f.orientation
+    v=f.velocity.copy();bg=f.gyro_bias.copy();ba=f.accel_bias.copy();q=f.orientation
+    f.update_range_translation(n,.12,ref_p,ref_q,quality=1.,plane_rms_m=.005,normal_angle_deg=.2)
+    dp=f.position-ref_p;normal=float(np.dot(dp,n));tangent=np.linalg.norm(dp-normal*n)
+    assert abs(normal)>1e-5 and tangent<1e-10
+    assert np.allclose(f.velocity,v,atol=1e-12);assert np.allclose(f.gyro_bias,bg,atol=1e-12);assert np.allclose(f.accel_bias,ba,atol=1e-12);assert rotation_error_deg(f.orientation,q)<1e-10
+    assert f.last_event['range_translation_state_coupling']=='normal_position_only'
+    assert f.last_event['tangential_position_correction_m']<1e-10
